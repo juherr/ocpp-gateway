@@ -1,0 +1,12 @@
+{
+  "default": {
+    "primary": "wss://csms.example.com/ocpp",
+    "secondaries": []
+  },
+  "chargers": {
+    "CP-001": {
+      "primary": "wss://primary-csms.example.com/ocpp",
+      "secondaries": ["wss://analytics.example.com/ocpp"]
+    }
+  }
+}

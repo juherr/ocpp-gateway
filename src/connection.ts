@@ -1,5 +1,6 @@
 import WebSocket from "ws";
 import { createLogger } from "./logger";
+import { type Route, buildTargetUrl } from "./routes";
 import { OCPP_MSG_CALL, OCPP_SUBPROTOCOLS } from "./types";
 
 /**
@@ -58,19 +59,18 @@ export class ChargerConnection {
   constructor(
     private readonly charger: WebSocket,
     private readonly chargePointId: string,
-    private readonly primaryUrl: string,
-    private readonly secondaryUrls: string[],
+    private readonly route: Route,
     private readonly protocol: string,
-    private readonly authHeader: string | undefined
+    private readonly authHeader: string | undefined,
   ) {
     this.log = createLogger(chargePointId);
     this.setup();
   }
 
   private setup() {
-    this.primary = this.connectPrimary(this.primaryUrl);
+    this.primary = this.connectPrimary(this.route.primary);
 
-    for (const url of this.secondaryUrls) {
+    for (const url of this.route.secondaries) {
       const state: SecondaryState = {
         url,
         ws: null,
@@ -125,8 +125,8 @@ export class ChargerConnection {
     });
 
     this.log.info("session started", {
-      primary: this.primaryUrl,
-      secondaries: this.secondaryUrls,
+      primary: this.route.primary,
+      secondaries: this.route.secondaries,
       protocol: this.protocol,
     });
   }
@@ -138,16 +138,12 @@ export class ChargerConnection {
    * CSMS at a time).
    */
   private connectPrimary(baseUrl: string): WebSocket {
-    const url = `${baseUrl.replace(/\/+$/, "")}/${this.chargePointId}`;
+    const url = buildTargetUrl(baseUrl, this.chargePointId);
 
-    const ws = new WebSocket(
-      url,
-      this.protocol ? [this.protocol] : OCPP_SUBPROTOCOLS,
-      {
-        headers: this.buildHeaders(),
-        handshakeTimeout: 10_000,
-      }
-    );
+    const ws = new WebSocket(url, this.protocol ? [this.protocol] : OCPP_SUBPROTOCOLS, {
+      headers: this.buildHeaders(),
+      handshakeTimeout: 10_000,
+    });
 
     ws.on("open", () => {
       this.log.info("primary connected", { url });
@@ -192,16 +188,12 @@ export class ChargerConnection {
    * connections aren't dropped by intermediaries.
    */
   private connectSecondary(state: SecondaryState): WebSocket {
-    const url = `${state.url.replace(/\/+$/, "")}/${this.chargePointId}`;
+    const url = buildTargetUrl(state.url, this.chargePointId);
 
-    const ws = new WebSocket(
-      url,
-      this.protocol ? [this.protocol] : OCPP_SUBPROTOCOLS,
-      {
-        headers: this.buildHeaders(),
-        handshakeTimeout: 10_000,
-      }
-    );
+    const ws = new WebSocket(url, this.protocol ? [this.protocol] : OCPP_SUBPROTOCOLS, {
+      headers: this.buildHeaders(),
+      handshakeTimeout: 10_000,
+    });
 
     ws.on("open", () => {
       this.log.info("secondary connected", { url });
@@ -279,7 +271,11 @@ export class ChargerConnection {
         this.log.warn("secondary pong timeout, forcing reconnect", {
           url: state.url,
         });
-        try { ws.close(4000, "pong timeout"); } catch { /* */ }
+        try {
+          ws.close(4000, "pong timeout");
+        } catch {
+          /* */
+        }
         return;
       }
 
@@ -317,7 +313,7 @@ export class ChargerConnection {
   private buildHeaders(): Record<string, string> {
     const headers: Record<string, string> = {};
     if (this.authHeader) {
-      headers["Authorization"] = this.authHeader;
+      headers.Authorization = this.authHeader;
     }
     return headers;
   }
