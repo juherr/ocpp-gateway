@@ -1,43 +1,65 @@
 {
-  "name": "joulo-ocpp-proxy",
+  "name": "ocpp-gateway",
   "version": "1.0.0",
-  "description": "Lightweight OCPP 1.6/2.0.1 WebSocket proxy that forwards charger traffic to a primary CSMS and mirrors it to one or more secondary backends.",
-  "main": "dist/index.js",
-  "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "tsc --watch & node --watch dist/index.js"
-  },
+  "description": "OCPP 1.6/2.0.1 WebSocket gateway that routes each charge point to its own primary CSMS (bidirectional) and read-only secondary mirrors, via a per-chargeBoxId routing table.",
   "keywords": [
+    "charge-point",
+    "csms",
+    "electric-vehicle",
+    "ev-charging",
+    "gateway",
     "ocpp",
     "ocpp-1.6",
     "ocpp-2.0",
-    "ev-charging",
-    "websocket",
     "proxy",
-    "csms",
-    "electric-vehicle",
-    "charge-point"
+    "websocket"
   ],
-  "author": "Joulo B.V. <info@joulo.nl> (https://joulo.nl)",
+  "homepage": "https://github.com/juherr/ocpp-gateway",
+  "bugs": {
+    "url": "https://github.com/juherr/ocpp-gateway/issues"
+  },
   "license": "MIT",
+  "author": "Julien Herr",
+  "contributors": [
+    "Joulo B.V. <info@joulo.nl> (https://joulo.nl)"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/joulo-nl/joulo-ocpp-proxy.git"
+    "url": "https://github.com/juherr/ocpp-gateway.git"
   },
-  "homepage": "https://github.com/joulo-nl/joulo-ocpp-proxy",
-  "bugs": {
-    "url": "https://github.com/joulo-nl/joulo-ocpp-proxy/issues"
-  },
-  "engines": {
-    "node": ">=18"
+  "main": "dist/index.cjs",
+  "scripts": {
+    "build": "vp pack",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.cjs",
+    "dev": "vp pack --watch & node --watch dist/index.cjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "vp lint && vp fmt --check",
+    "format": "vp fmt --write && vp lint --fix",
+    "prepare": "husky"
   },
   "dependencies": {
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@commitlint/cli": "^21.0.2",
+    "@commitlint/config-conventional": "^21.0.2",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.0",
-    "typescript": "^5.7.0"
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.7",
+    "typescript": "^5.7.0",
+    "vite-plus": "^0.2.0",
+    "vitest": "^2.1.0"
+  },
+  "lint-staged": {
+    "*.{ts,js,mjs,cjs}": [
+      "vp fmt --write",
+      "vp lint --fix"
+    ]
+  },
+  "engines": {
+    "node": ">=24"
   }
 }
