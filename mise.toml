@@ -1,0 +1,4 @@
+[tools]
+# Node.js 24.x — the current LTS. Single source of truth for local dev, CI
+# (jdx/mise-action reads this file), and the Docker images.
+node = "24"

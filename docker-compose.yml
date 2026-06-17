@@ -1,12 +1,13 @@
 services:
-  ocpp-proxy:
+  ocpp-gateway:
     build: .
     ports:
       - "9000:9000"
     environment:
       - PORT=9000
-      - PRIMARY_CSMS_URL=wss://your-primary-csms.example.com/ocpp
-      # Comma-separated list of secondary CSMS URLs (optional)
-      # - SECONDARY_CSMS_URLS=wss://secondary-a.example.com/ocpp,wss://secondary-b.example.com/ocpp
+      - ROUTES_FILE=/app/routes.json
       - LOG_LEVEL=info
+    volumes:
+      # Provide your routing table (see routes.example.json).
+      - ./routes.json:/app/routes.json:ro
     restart: unless-stopped

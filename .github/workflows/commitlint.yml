@@ -1,0 +1,36 @@
+name: Lint Commits
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  commitlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      # Installs Node from mise.toml (single source of truth for the version).
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+
+      - run: npm ci
+
+      # Validate every commit in a PR against the Conventional Commits rules.
+      - name: Lint PR commits
+        if: github.event_name == 'pull_request'
+        env:
+          FROM: ${{ github.event.pull_request.base.sha }}
+          TO: ${{ github.event.pull_request.head.sha }}
+        run: npx commitlint --from "$FROM" --to "$TO" --verbose
+
+      # Validate the commits introduced by a push to main.
+      - name: Lint pushed commits
+        if: github.event_name == 'push'
+        env:
+          FROM: ${{ github.event.before }}
+          TO: ${{ github.event.after }}
+        run: npx commitlint --from "$FROM" --to "$TO" --verbose

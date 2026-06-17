@@ -1,5 +1,6 @@
 node_modules/
 dist/
 .env
+routes.json
 *.log
 .DS_Store
