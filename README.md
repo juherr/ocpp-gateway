@@ -153,6 +153,8 @@ ws://gateway:9000/ws/CP-001
 
 If the charger sends HTTP Basic Auth credentials, the gateway forwards the `Authorization` header to all upstream CSMS backends (primary and secondaries) as-is.
 
+The gateway does not validate credentials itself — the CSMS does. When a charger reconnects while its previous session is still open, the gateway closes the stale session first (some CSMS reject a second connection for the same id), but only if the new connection sends the same `Authorization` header. A connection with different credentials cannot disconnect a live charger; it runs alongside and the CSMS accepts or rejects it. Chargers that connect without credentials get no such protection.
+
 ### Sub-protocol negotiation
 
 The gateway negotiates OCPP sub-protocols (`ocpp1.6`, `ocpp2.0`, `ocpp2.0.1`) with the charger and propagates the negotiated sub-protocol to every upstream backend.

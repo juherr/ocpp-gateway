@@ -4,6 +4,7 @@ import type { Config } from "./config";
 import { ChargerConnection } from "./connection";
 import { createLogger } from "./logger";
 import type { RouteStore } from "./routes";
+import { SessionRegistry } from "./sessions";
 import { OCPP_SUBPROTOCOLS } from "./types";
 
 const log = createLogger("proxy");
@@ -19,7 +20,7 @@ const log = createLogger("proxy");
  * then appended to each upstream URL unless that backend opts out.
  */
 export function startProxy(config: Config, routes: RouteStore) {
-  const sessions = new Map<string, ChargerConnection>();
+  const sessions = new SessionRegistry<ChargerConnection>();
 
   const server = createServer((req, res) => {
     if (handleHttp(req, res)) return;
@@ -60,20 +61,24 @@ export function startProxy(config: Config, routes: RouteStore) {
       secondaries: route.secondaries.map((backend) => backend.url),
     });
 
-    // Destroy any existing session for this charger before creating a new one.
-    // Without this, the old primary connection stays open; some CSMS backends
-    // reject the new connection while the old one is still alive, forcing the
-    // charger into a reconnect loop.
-    const existing = sessions.get(chargePointId);
-    if (existing) {
-      log.info("replacing existing session", { chargePointId });
-      existing.teardown();
+    // Replace this charger's stale session, if any: some CSMS reject a new
+    // connection while the old one is still open, forcing a reconnect loop.
+    // Only sessions opened with the same credentials are replaced (see
+    // SessionRegistry).
+    const { replaced, kept } = sessions.evict(chargePointId, authHeader);
+    if (replaced > 0) log.info("replaced existing session", { chargePointId, replaced });
+    if (kept > 0) {
+      log.warn("existing session kept: new connection has different credentials", {
+        chargePointId,
+        kept,
+        ip: req.socket.remoteAddress,
+      });
     }
 
     const conn = new ChargerConnection(ws, chargePointId, route, protocol, authHeader, () => {
-      if (sessions.get(chargePointId) === conn) sessions.delete(chargePointId);
+      sessions.remove(chargePointId, conn);
     });
-    sessions.set(chargePointId, conn);
+    sessions.add(chargePointId, authHeader, conn);
   });
 
   wss.on("error", (err) => {

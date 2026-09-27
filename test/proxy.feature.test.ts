@@ -70,8 +70,9 @@ async function connectWhenOpen(
   url: string,
   protocol: string,
   timeoutMs = 3000,
+  headers: Record<string, string> = {},
 ): Promise<WebSocket> {
-  const socket = new WebSocket(url, protocol);
+  const socket = new WebSocket(url, protocol, { headers });
   await waitForOpen(socket, timeoutMs);
   return socket;
 }
@@ -407,5 +408,40 @@ describe("proxy feature", () => {
 
     closeWaits.push(waitForClose(secondUpstream));
     await Promise.all(closeWaits);
+  });
+
+  it("keeps the existing session when a newcomer presents different credentials", async () => {
+    const legitPrimaryConn = waitForConnection(primary);
+
+    const primaryPort = await startWsServer(primary);
+    const proxyPort = await allocatePort();
+
+    await startGateway(proxyPort, {
+      primary: { url: `ws://127.0.0.1:${String(primaryPort)}`, appendChargeBoxId: true },
+      secondaries: [],
+    });
+
+    const legitCharger = await connectWhenOpen(
+      `ws://127.0.0.1:${String(proxyPort)}/cp-guarded`,
+      "ocpp1.6",
+      3000,
+      { Authorization: "Basic dXNlcjpwYXNz" },
+    );
+    openChargers.push(legitCharger);
+    const { socket: legitUpstream } = await legitPrimaryConn;
+
+    const intruderPrimaryConn = waitForConnection(primary);
+    const intruder = await connectWhenOpen(
+      `ws://127.0.0.1:${String(proxyPort)}/cp-guarded`,
+      "ocpp1.6",
+      3000,
+      { Authorization: "Basic b3RoZXI6b3RoZXI=" },
+    );
+    openChargers.push(intruder);
+    await intruderPrimaryConn;
+    await sleep(100);
+
+    expect(legitUpstream.readyState).toBe(WebSocket.OPEN);
+    expect(legitCharger.readyState).toBe(WebSocket.OPEN);
   });
 });

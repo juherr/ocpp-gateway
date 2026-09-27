@@ -70,7 +70,9 @@ global primary/secondary configuration. Nothing has been released yet.
 - Charger reconnect loop caused by a stale session (from upstream): when a
   charger reconnects with an id that still has a live session, the old session
   and its upstream links are torn down first, since some CSMS reject a second
-  connection for the same charge point.
+  connection for the same charge point. Unlike upstream, the old session is
+  only replaced when the new connection sends the same `Authorization` header,
+  so knowing a chargeBoxId is not enough to disconnect a live charger.
 - Duplicate pongs (from upstream): `autoPong` is disabled on the charger server
   and the primary socket, so ping/pong frames are only forwarded end-to-end.
 - Failed sends to a secondary are now logged as warnings instead of being
