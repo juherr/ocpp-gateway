@@ -25,6 +25,15 @@ global primary/secondary configuration. Nothing has been released yet.
 - `GET /healthz` health-check endpoint returning `200 ok`.
 - Structured route logging on connect (chargeBoxId, resolved primary and
   secondaries).
+- Per-backend `appendChargeBoxId` option in the routing table: a `primary` or
+  `secondary` may be written as `{ "url": "...", "appendChargeBoxId": false }`
+  to connect to a fixed CSMS endpoint URL as-is. A bare URL string keeps
+  appending the chargeBoxId. This is the fork's counterpart to upstream's
+  `PRIMARY_CSMS_APPEND_CHARGE_POINT_ID` / `SECONDARY_CSMS_APPEND_CHARGE_POINT_ID`.
+- OCPP frame debug logging (from upstream): at `LOG_LEVEL=debug`, frames are
+  logged as `[OCPP CALL|RESULT|ERROR] (<id>): <payload>`, truncated to
+  `LOG_DEBUG_MESSAGE_MAX_LENGTH` characters (default `120`; set it empty to
+  disable truncation).
 - Multi-arch Docker image (`linux/amd64`, `linux/arm64`) published to GitHub
   Container Registry, with semver-pinned tags (never `latest`).
 - Dependabot configuration for npm, GitHub Actions, and Docker dependencies.
@@ -37,13 +46,32 @@ global primary/secondary configuration. Nothing has been released yet.
 
 - Replaced the upstream global `PRIMARY_CSMS_URL` / `SECONDARY_CSMS_URLS`
   environment configuration with the per-chargeBoxId routing table. Each
-  upstream target URL is built as `<baseUrl>/<chargeBoxId>`.
+  upstream target URL is built as `<baseUrl>/<chargeBoxId>` (query parameters
+  are kept), unless the backend opts out with `appendChargeBoxId: false`.
+- Backend URLs in the routing table are validated when the table loads.
+- Stricter environment parsing (from upstream): an invalid `PORT`, `LOG_LEVEL`
+  or `LOG_DEBUG_MESSAGE_MAX_LENGTH` now stops the gateway at startup with a
+  message naming the variable, instead of silently falling back.
+- Synced with upstream `joulo-ocpp-proxy` up to `d1b699d` (merged, not
+  rebased; later syncs are `git merge upstream/main`). CI commit linting only
+  checks the fork's own first-parent commits.
 - Renamed the project from `joulo-ocpp-proxy` to `ocpp-gateway`.
 - Switched the toolchain to Vite+ (Oxlint + Oxfmt for lint/format, `vp pack`
   for bundling to `dist/index.cjs`); `tsc --noEmit` is kept as a separate
   type-check gate.
 - Pinned the Node version with mise (`mise.toml`, Node 24 LTS) as the single
   source of truth for local dev, CI (`jdx/mise-action`), and the Docker images.
+
+### Fixed
+
+- Charger reconnect loop caused by a stale session (from upstream): when a
+  charger reconnects with an id that still has a live session, the old session
+  and its upstream links are torn down first, since some CSMS reject a second
+  connection for the same charge point.
+- Duplicate pongs (from upstream): `autoPong` is disabled on the charger server
+  and the primary socket, so ping/pong frames are only forwarded end-to-end.
+- Failed sends to a secondary are now logged as warnings instead of being
+  silently ignored (from upstream).
 
 ### Preserved
 
