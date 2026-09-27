@@ -16,7 +16,7 @@ const log = createLogger("proxy");
  *
  * The chargeBoxId (last path segment) is resolved against the routing table
  * to pick a primary CSMS and optional read-only secondaries; the same id is
- * then appended to each upstream base URL.
+ * then appended to each upstream URL unless that backend opts out.
  */
 export function startProxy(config: Config, routes: RouteStore) {
   const sessions = new Map<string, ChargerConnection>();
@@ -56,8 +56,8 @@ export function startProxy(config: Config, routes: RouteStore) {
       chargePointId,
       protocol: protocol || "none",
       ip: req.socket.remoteAddress,
-      primary: route.primary,
-      secondaries: route.secondaries,
+      primary: route.primary.url,
+      secondaries: route.secondaries.map((backend) => backend.url),
     });
 
     // Destroy any existing session for this charger before creating a new one.

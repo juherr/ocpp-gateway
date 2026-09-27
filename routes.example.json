@@ -7,6 +7,10 @@
     "CP-001": {
       "primary": "wss://primary-csms.example.com/ocpp",
       "secondaries": ["wss://analytics.example.com/ocpp"]
+    },
+    "CP-002": {
+      "primary": { "url": "wss://fixed-csms.example.com/XXXXXXXX", "appendChargeBoxId": false },
+      "secondaries": []
     }
   }
 }

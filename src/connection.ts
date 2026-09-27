@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 import { createLogger } from "./logger";
-import { type Route, buildTargetUrl } from "./routes";
+import { type Backend, type Route, buildTargetUrl } from "./routes";
 import { OCPP_SUBPROTOCOLS } from "./types";
 import { forwardPing, forwardPong, rawDataToString } from "./utils/websocket";
 
@@ -300,8 +300,8 @@ export class ChargerConnection {
     }, SECONDARY_RECONNECT_DELAY_MS);
   }
 
-  private resolveUrl(baseUrl: string): string {
-    return buildTargetUrl(baseUrl, this.chargePointId);
+  private resolveUrl(backend: Backend): string {
+    return buildTargetUrl(backend, this.chargePointId);
   }
 
   private buildHeaders(): Record<string, string> {

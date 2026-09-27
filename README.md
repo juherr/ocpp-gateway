@@ -57,6 +57,10 @@ Routing is driven by a JSON file (path from `ROUTES_FILE`, default `./routes.jso
     "CP-001": {
       "primary": "wss://primary-csms.example.com/ocpp",
       "secondaries": ["wss://analytics.example.com/ocpp"]
+    },
+    "CP-002": {
+      "primary": { "url": "wss://fixed-csms.example.com/XXXXXXXX", "appendChargeBoxId": false },
+      "secondaries": []
     }
   }
 }
@@ -64,16 +68,16 @@ Routing is driven by a JSON file (path from `ROUTES_FILE`, default `./routes.jso
 
 - **`default`** (required) — route used for any chargeBoxId not listed under `chargers`.
 - **`chargers`** (optional) — exact-match overrides keyed by chargeBoxId.
-- Each route has a `primary` (string, required) and `secondaries` (array of strings, optional).
+- Each route has a `primary` backend (required) and `secondaries` (array of backends, optional).
+- A backend is either a URL string or an object `{ "url": "...", "appendChargeBoxId": false }`. `appendChargeBoxId` defaults to `true`; a bare string is shorthand for `{ "url": "...", "appendChargeBoxId": true }`.
 
 **Resolution:** for a charger with id `X`, the gateway uses `chargers["X"]` if present, otherwise `default`.
 
-**Target URL:** for every upstream (primary and each secondary), the gateway appends the chargeBoxId as a path segment: `<baseUrl>/<chargeBoxId>`. Different backends may therefore use entirely different base paths. In the example above, charger `CP-001` connects to:
+**Target URL:** for every upstream (primary and each secondary), the gateway appends the url-encoded chargeBoxId as a path segment: `<baseUrl>/<chargeBoxId>` (query parameters are kept). Different backends may therefore use entirely different base paths. For CSMS endpoints that use a fixed URL per charger, set `appendChargeBoxId: false` and the URL is used as-is. In the example above:
 
-- primary → `wss://primary-csms.example.com/ocpp/CP-001`
-- secondary → `wss://analytics.example.com/ocpp/CP-001`
-
-while every other charger goes only to `wss://csms.example.com/ocpp/<chargeBoxId>`.
+- `CP-001` → primary `wss://primary-csms.example.com/ocpp/CP-001`, secondary `wss://analytics.example.com/ocpp/CP-001`
+- `CP-002` → primary `wss://fixed-csms.example.com/XXXXXXXX` (unchanged), no secondary
+- every other charger → `wss://csms.example.com/ocpp/<chargeBoxId>` only
 
 ### Hot reload
 

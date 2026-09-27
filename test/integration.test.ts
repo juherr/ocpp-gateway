@@ -16,6 +16,7 @@ function makeCsms(tag: string) {
   let connections = 0;
   let auth: string | undefined;
   let protocol: string | undefined;
+  let path: string | undefined;
 
   const wss = new WebSocketServer({
     port: 0,
@@ -29,6 +30,7 @@ function makeCsms(tag: string) {
     connections += 1;
     auth = req.headers.authorization;
     protocol = ws.protocol;
+    path = req.url;
     ws.on("message", (data) => {
       received.push(data.toString());
       ws.send(JSON.stringify([3, "reply", { from: tag }]));
@@ -41,6 +43,7 @@ function makeCsms(tag: string) {
     connected: () => connections > 0,
     auth: () => auth,
     protocol: () => protocol,
+    path: () => path,
     port: () => (wss.address() as AddressInfo).port,
     close: () => wss.close(),
   };
@@ -177,6 +180,25 @@ describe("OCPP proxy integration", () => {
     // default route has no secondaries → mirror CSMS gets nothing
     await delay(150);
     expect(h.secondary.received()).toHaveLength(0);
+
+    client.close();
+    await h.close();
+  });
+
+  it("connects to a fixed endpoint URL when appendChargeBoxId is false", async () => {
+    const h = await setup((pp, sp) => ({
+      default: {
+        primary: { url: `ws://127.0.0.1:${pp}/fixed/XXXXXXXX`, appendChargeBoxId: false },
+        secondaries: [`ws://127.0.0.1:${sp}/ocpp`],
+      },
+    }));
+
+    const client = new WebSocket(`ws://127.0.0.1:${h.proxyPort}/CP-001`, ["ocpp1.6"]);
+    await once(client, "open");
+    await waitFor(() => h.primary.connected() && h.secondary.connected());
+
+    expect(h.primary.path()).toBe("/fixed/XXXXXXXX");
+    expect(h.secondary.path()).toBe("/ocpp/CP-001");
 
     client.close();
     await h.close();
