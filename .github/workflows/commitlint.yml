@@ -25,7 +25,7 @@ jobs:
         env:
           FROM: ${{ github.event.pull_request.base.sha }}
           TO: ${{ github.event.pull_request.head.sha }}
-        run: npx commitlint --from "$FROM" --to "$TO" --verbose
+        run: .github/scripts/commitlint-range.sh "$FROM" "$TO"
 
       # Validate the commits introduced by a push to main.
       - name: Lint pushed commits
@@ -33,4 +33,4 @@ jobs:
         env:
           FROM: ${{ github.event.before }}
           TO: ${{ github.event.after }}
-        run: npx commitlint --from "$FROM" --to "$TO" --verbose
+        run: .github/scripts/commitlint-range.sh "$FROM" "$TO"
