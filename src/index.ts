@@ -1,12 +1,12 @@
 import { loadConfig } from "./config";
-import { createLogger, setLogLevel } from "./logger";
+import { configureLogger, createLogger } from "./logger";
 import { startProxy } from "./proxy";
 import { RouteStore } from "./routes";
 
 const log = createLogger("proxy");
 
 const config = loadConfig();
-setLogLevel(config.logLevel);
+configureLogger(config.loggerConfig);
 
 let routes: RouteStore;
 try {

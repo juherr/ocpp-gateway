@@ -101,6 +101,7 @@ git clone https://github.com/juherr/ocpp-gateway.git
 cd ocpp-gateway
 cp routes.example.json routes.json
 # Edit routes.json with your CSMS URLs
+cp .env.example .env   # optional overrides (PORT, LOG_LEVEL, …)
 docker compose up -d
 ```
 
@@ -120,11 +121,12 @@ ROUTES_FILE=./routes.json npm start
 
 All configuration is done through environment variables:
 
-| Variable      | Required | Default         | Description                         |
-| ------------- | -------- | --------------- | ----------------------------------- |
-| `PORT`        | No       | `9000`          | Port the gateway listens on         |
-| `ROUTES_FILE` | No       | `./routes.json` | Path to the JSON routing table      |
-| `LOG_LEVEL`   | No       | `info`          | `debug`, `info`, `warn`, or `error` |
+| Variable                       | Required | Default         | Description                                                                         |
+| ------------------------------ | -------- | --------------- | ----------------------------------------------------------------------------------- |
+| `PORT`                         | No       | `9000`          | Port the gateway listens on                                                         |
+| `ROUTES_FILE`                  | No       | `./routes.json` | Path to the JSON routing table                                                      |
+| `LOG_LEVEL`                    | No       | `info`          | `debug`, `info`, `warn`, or `error`                                                 |
+| `LOG_DEBUG_MESSAGE_MAX_LENGTH` | No       | `120`           | Max char length for debug payload summaries. Leave empty to disable truncation      |
 
 ## Charger setup
 
@@ -159,12 +161,15 @@ The gateway negotiates OCPP sub-protocols (`ocpp1.6`, `ocpp2.0`, `ocpp2.0.1`) wi
 
 Logs are structured JSON written to stdout/stderr. Each charger session logs under a tag equal to its chargeBoxId, and the resolved route (primary + secondaries) is logged on connect:
 
-```json
+```json lines
 {"time":"2026-06-17T10:00:00.000Z","level":"info","tag":"proxy","msg":"proxy listening","port":9000,"routesFile":"./routes.json"}
 {"time":"2026-06-17T10:00:01.000Z","level":"info","tag":"proxy","msg":"charger connected","chargePointId":"CP-001","protocol":"ocpp1.6","primary":"wss://primary-csms.example.com/ocpp","secondaries":["wss://analytics.example.com/ocpp"]}
+{"time":"2026-06-17T10:00:01.500Z","level":"debug","tag":"CP-001","msg":"charger → proxy","message":"[OCPP CALL] (abc123): [2, \"abc123\", \"BootNotification\", {\"chargePointVendor\":\"Acme\"}]"}
 ```
 
-Set `LOG_LEVEL=debug` to see individual OCPP messages.
+Set `LOG_LEVEL=debug` for OCPP payload summaries (including message-type-prefixed payloads for troubleshooting).
+Set `LOG_DEBUG_MESSAGE_MAX_LENGTH` to a positive integer to cap logged `message` values in debug output.
+Leave it unset for the default, or set it empty to disable truncation.
 
 ## Development
 

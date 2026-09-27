@@ -6,12 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
-import { setLogLevel } from "../src/logger";
 import { startProxy } from "../src/proxy";
 import { RouteStore } from "../src/routes";
 import { OCPP_SUBPROTOCOLS } from "../src/types";
-
-setLogLevel("error");
 
 /** A mock CSMS that records what it receives and replies with a tagged result. */
 function makeCsms(tag: string) {
@@ -88,7 +85,10 @@ async function setup(
 
   const store = RouteStore.load(routesPath);
   const proxyPort = await freePort();
-  const server = startProxy({ port: proxyPort, routesFile: routesPath, logLevel: "error" }, store);
+  const server = startProxy(
+    { port: proxyPort, routesFile: routesPath, loggerConfig: { logLevel: "error" } },
+    store,
+  );
   await once(server, "listening");
 
   return {

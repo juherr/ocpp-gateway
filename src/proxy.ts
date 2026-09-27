@@ -19,6 +19,8 @@ const log = createLogger("proxy");
  * then appended to each upstream base URL.
  */
 export function startProxy(config: Config, routes: RouteStore) {
+  const sessions = new Map<string, ChargerConnection>();
+
   const server = createServer((req, res) => {
     if (handleHttp(req, res)) return;
     res.writeHead(200, { "Content-Type": "text/plain" });
@@ -27,6 +29,7 @@ export function startProxy(config: Config, routes: RouteStore) {
 
   const wss = new WebSocketServer({
     server,
+    autoPong: false,
     handleProtocols: (protocols) => {
       for (const p of OCPP_SUBPROTOCOLS) {
         if (protocols.has(p)) return p;
@@ -46,7 +49,7 @@ export function startProxy(config: Config, routes: RouteStore) {
     }
 
     const protocol = ws.protocol;
-    const authHeader = req.headers.authorization as string | undefined;
+    const authHeader = req.headers.authorization;
     const route = routes.resolve(chargePointId);
 
     log.info("charger connected", {
@@ -57,7 +60,20 @@ export function startProxy(config: Config, routes: RouteStore) {
       secondaries: route.secondaries,
     });
 
-    new ChargerConnection(ws, chargePointId, route, protocol, authHeader);
+    // Destroy any existing session for this charger before creating a new one.
+    // Without this, the old primary connection stays open; some CSMS backends
+    // reject the new connection while the old one is still alive, forcing the
+    // charger into a reconnect loop.
+    const existing = sessions.get(chargePointId);
+    if (existing) {
+      log.info("replacing existing session", { chargePointId });
+      existing.teardown();
+    }
+
+    const conn = new ChargerConnection(ws, chargePointId, route, protocol, authHeader, () => {
+      if (sessions.get(chargePointId) === conn) sessions.delete(chargePointId);
+    });
+    sessions.set(chargePointId, conn);
   });
 
   wss.on("error", (err) => {

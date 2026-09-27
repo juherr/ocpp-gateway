@@ -1,28 +1,37 @@
+import type { LoggerConfig, LogLevel } from "./logger";
+import { DEFAULT_DEBUG_MESSAGE_MAX_LENGTH, DEFAULT_LOG_LEVEL, LOG_LEVELS } from "./logger";
+import {
+  parseEnv,
+  parseIntegerInRange,
+  parseOptionalPositiveInteger,
+  parseStringUnion,
+} from "./utils/value-parsers";
+
 export interface Config {
   port: number;
   routesFile: string;
-  logLevel: "debug" | "info" | "warn" | "error";
+  loggerConfig: LoggerConfig;
 }
-
-const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
 
 export function loadConfig(): Config {
   const routesFile = process.env.ROUTES_FILE ?? "./routes.json";
 
-  const level = (process.env.LOG_LEVEL ?? "info").toLowerCase();
-  const logLevel = (LOG_LEVELS as readonly string[]).includes(level)
-    ? (level as Config["logLevel"])
-    : "info";
+  const logLevel: LogLevel = parseEnv("LOG_LEVEL", (value) =>
+    parseStringUnion(value, LOG_LEVELS, DEFAULT_LOG_LEVEL),
+  );
+  const debugMessageMaxLength: number | undefined = parseEnv(
+    "LOG_DEBUG_MESSAGE_MAX_LENGTH",
+    (value) => parseOptionalPositiveInteger(value, DEFAULT_DEBUG_MESSAGE_MAX_LENGTH),
+  );
 
-  const portRaw = process.env.PORT ?? "9000";
-  const port = Number.parseInt(portRaw, 10);
-  if (!Number.isFinite(port) || port < 1 || port > 65535) {
-    throw new Error(`Invalid PORT value: "${portRaw}". Must be an integer between 1 and 65535.`);
-  }
+  const port: number = parseEnv("PORT", (value) => parseIntegerInRange(value ?? "9000", 1, 65535));
 
   return {
     port,
     routesFile,
-    logLevel,
+    loggerConfig: {
+      logLevel,
+      debugMessageMaxLength,
+    },
   };
 }
