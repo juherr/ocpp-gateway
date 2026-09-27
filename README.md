@@ -173,6 +173,7 @@ Logs are structured JSON written to stdout/stderr. Each charger session logs und
 
 Set `LOG_LEVEL=debug` for OCPP payload summaries (including message-type-prefixed payloads for troubleshooting).
 Set `LOG_DEBUG_MESSAGE_MAX_LENGTH` to a positive integer to cap logged `message` values in debug output.
+Debug output contains raw OCPP payloads (idTags, meter values…), so keep `LOG_LEVEL=debug` for troubleshooting rather than normal operation.
 Leave it unset for the default, or set it empty to disable truncation.
 
 ## Development

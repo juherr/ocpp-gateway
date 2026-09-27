@@ -5,7 +5,8 @@ services:
       - "9000:9000"
     # PORT, LOG_LEVEL, LOG_DEBUG_MESSAGE_MAX_LENGTH… (see .env.example).
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       - ROUTES_FILE=/app/routes.json
     volumes:
