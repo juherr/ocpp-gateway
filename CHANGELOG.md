@@ -48,7 +48,10 @@ global primary/secondary configuration. Nothing has been released yet.
   environment configuration with the per-chargeBoxId routing table. Each
   upstream target URL is built as `<baseUrl>/<chargeBoxId>` (query parameters
   are kept), unless the backend opts out with `appendChargeBoxId: false`.
-- Backend URLs in the routing table are validated when the table loads.
+- Backend URLs in the routing table are validated when the table loads: they
+  must parse and use `ws:`, `wss:`, `http:` or `https:`. Previously a typo such
+  as `htps://` in any backend (even a secondary) crashed the whole gateway on
+  the first charger connection.
 - Stricter environment parsing (from upstream): an invalid `PORT`, `LOG_LEVEL`
   or `LOG_DEBUG_MESSAGE_MAX_LENGTH` now stops the gateway at startup with a
   message naming the variable, instead of silently falling back.

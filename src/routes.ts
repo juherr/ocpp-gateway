@@ -35,12 +35,19 @@ export interface RouteTable {
   chargers: Record<string, Route>;
 }
 
+const DIALABLE_PROTOCOLS = new Set(["ws:", "wss:", "http:", "https:"]);
+
 function parseUrl(value: unknown, where: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${where} must have a non-empty string url`);
   }
   if (!URL.canParse(value)) {
     throw new Error(`${where} url "${value}" is not a valid URL`);
+  }
+  // `new WebSocket()` throws synchronously on any other scheme, which would
+  // crash the gateway on the first charger connection instead of at load time.
+  if (!DIALABLE_PROTOCOLS.has(new URL(value).protocol)) {
+    throw new Error(`${where} url "${value}" must use ws:, wss:, http: or https:`);
   }
   return value;
 }

@@ -59,6 +59,23 @@ describe("parseRouteTable", () => {
     expect(() => parseRouteTable({ default: { primary: "not a url" } })).toThrow(/valid URL/);
   });
 
+  it.each(["htps://csms.example.com/ocpp", "mailto:ops@example.com"])(
+    "rejects a backend url with a scheme ws cannot dial (%s)",
+    (url) => {
+      // ws throws synchronously on these at connect time, which would crash the gateway.
+      expect(() =>
+        parseRouteTable({ default: { primary: "ws://x/y", secondaries: [url] } }),
+      ).toThrow(/ws:, wss:, http: or https:/);
+    },
+  );
+
+  it.each(["ws://x/y", "wss://x/y", "http://x/y", "https://x/y"])(
+    "accepts a backend url with a dialable scheme (%s)",
+    (url) => {
+      expect(parseRouteTable({ default: { primary: url } }).default.primary.url).toBe(url);
+    },
+  );
+
   it("rejects a non-boolean appendChargeBoxId", () => {
     expect(() =>
       parseRouteTable({ default: { primary: { url: "ws://x/y", appendChargeBoxId: "no" } } }),
