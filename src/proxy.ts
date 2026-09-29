@@ -92,18 +92,15 @@ export function startProxy(config: Config, routes: RouteStore) {
     });
   });
 
-  const shutdown = () => {
-    log.info("shutting down…");
-    routes.close();
-    for (const ws of wss.clients) ws.close(1001, "Server shutting down");
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(1), 5000);
-  };
+  /** Close every charger session, then stop accepting connections. */
+  const close = () =>
+    new Promise<void>((resolve) => {
+      for (const ws of wss.clients) ws.close(1001, "Server shutting down");
+      wss.close();
+      server.close(() => resolve());
+    });
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
-
-  return server;
+  return { server, close };
 }
 
 /** Handle plain-HTTP endpoints. Returns true if the request was served. */

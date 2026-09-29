@@ -24,4 +24,14 @@ try {
 // updated table.
 routes.watch();
 
-startProxy(config, routes);
+const gateway = startProxy(config, routes);
+
+const shutdown = () => {
+  log.info("shutting down…");
+  routes.close();
+  setTimeout(() => process.exit(1), 5000).unref();
+  void gateway.close().then(() => process.exit(0));
+};
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

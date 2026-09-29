@@ -1,13 +1,7 @@
-import { once } from "node:events";
-import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
-import { startProxy } from "../src/proxy";
-import { RouteStore } from "../src/routes";
-import { rawDataToString } from "../src/utils/websocket";
+import { sleep, startGateway as startTestGateway } from "./helpers";
 
 interface WsRecord {
   httpServer: ReturnType<typeof createServer>;
@@ -59,12 +53,6 @@ function waitForClose(
   });
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
 /** Open a charger socket; callers start the gateway (and await "listening") first. */
 async function connectWhenOpen(
   url: string,
@@ -75,18 +63,6 @@ async function connectWhenOpen(
   const socket = new WebSocket(url, protocol, { headers });
   await waitForOpen(socket, timeoutMs);
   return socket;
-}
-
-function waitForMessage(socket: WebSocket, timeoutMs = 2000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error("websocket message timeout"));
-    }, timeoutMs);
-    socket.once("message", (data) => {
-      clearTimeout(timeout);
-      resolve(rawDataToString(data));
-    });
-  });
 }
 
 function createWsServer(): WsRecord {
@@ -152,39 +128,14 @@ describe("proxy feature", () => {
   let primary: WsRecord;
   let secondary: WsRecord;
   let openChargers: WebSocket[] = [];
-  let gateways: ReturnType<typeof startProxy>[] = [];
+  let gateways: { close(): Promise<void> }[] = [];
 
-  /** Start the gateway with a single default route written to a temp routes file. */
-  const startGateway = async (port: number, route: object) => {
-    const dir = mkdtempSync(join(tmpdir(), "ocpp-feature-"));
-    const routesFile = join(dir, "routes.json");
-    writeFileSync(routesFile, JSON.stringify({ default: route }));
-    const gateway = startProxy(
-      { port, routesFile, loggerConfig: { logLevel: "error" } },
-      RouteStore.load(routesFile),
-    );
+  /** Start the gateway with a single default route; returns its port. */
+  const startGateway = async (route: object) => {
+    const gateway = await startTestGateway({ default: route });
     gateways.push(gateway);
-    await once(gateway, "listening");
-    return gateway;
+    return gateway.port;
   };
-
-  const allocatePort = (): Promise<number> =>
-    new Promise((resolve, reject) => {
-      const s = createServer();
-      s.once("error", reject);
-      s.listen(0, "127.0.0.1", () => {
-        const address = s.address();
-        if (!address || typeof address !== "object") {
-          reject(new Error("Failed to allocate port"));
-          return;
-        }
-
-        const port = address.port;
-        s.close(() => {
-          resolve(port);
-        });
-      });
-    });
 
   beforeEach(() => {
     primary = createWsServer();
@@ -201,19 +152,14 @@ describe("proxy feature", () => {
     }
 
     await closeAll([primary, secondary]);
-    for (const gateway of gateways) {
-      gateway.closeAllConnections();
-      await new Promise<void>((resolve) => gateway.close(() => resolve()));
-    }
+    await Promise.all(gateways.map((gateway) => gateway.close()));
   });
 
   it("accepts charger URLs with query parameters", async () => {
     const primaryConnPromise = waitForConnection(primary);
 
     const primaryPort = await startWsServer(primary);
-    const proxyPort = await allocatePort();
-
-    await startGateway(proxyPort, {
+    const proxyPort = await startGateway({
       primary: {
         url: `ws://127.0.0.1:${String(primaryPort)}`,
         appendChargeBoxId: true,
@@ -238,9 +184,7 @@ describe("proxy feature", () => {
     const primaryConnPromise = waitForConnection(primary);
 
     const primaryPort = await startWsServer(primary);
-    const proxyPort = await allocatePort();
-
-    await startGateway(proxyPort, {
+    const proxyPort = await startGateway({
       primary: {
         url: `ws://127.0.0.1:${String(primaryPort)}/endpoint?tenant=emea`,
         appendChargeBoxId: true,
@@ -266,9 +210,7 @@ describe("proxy feature", () => {
 
     const primaryPort = await startWsServer(primary);
     const secondaryPort = await startWsServer(secondary);
-    const proxyPort = await allocatePort();
-
-    await startGateway(proxyPort, {
+    const proxyPort = await startGateway({
       primary: {
         url: `ws://127.0.0.1:${String(primaryPort)}`,
         appendChargeBoxId: true,
@@ -300,9 +242,7 @@ describe("proxy feature", () => {
 
   it("rejects charger connections without a charge point ID", async () => {
     const primaryPort = await startWsServer(primary);
-    const proxyPort = await allocatePort();
-
-    await startGateway(proxyPort, {
+    const proxyPort = await startGateway({
       primary: {
         url: `ws://127.0.0.1:${String(primaryPort)}`,
         appendChargeBoxId: true,
@@ -319,9 +259,7 @@ describe("proxy feature", () => {
   });
 
   it("drops charger connection when primary is unavailable", async () => {
-    const proxyPort = await allocatePort();
-
-    await startGateway(proxyPort, {
+    const proxyPort = await startGateway({
       primary: {
         url: `ws://127.0.0.1:9`,
         appendChargeBoxId: true,
@@ -362,9 +300,7 @@ describe("proxy feature", () => {
     const firstPrimaryConn = waitForConnection(primary);
 
     const primaryPort = await startWsServer(primary);
-    const proxyPort = await allocatePort();
-
-    await startGateway(proxyPort, {
+    const proxyPort = await startGateway({
       primary: {
         url: `ws://127.0.0.1:${String(primaryPort)}`,
         appendChargeBoxId: true,
@@ -414,9 +350,7 @@ describe("proxy feature", () => {
     const legitPrimaryConn = waitForConnection(primary);
 
     const primaryPort = await startWsServer(primary);
-    const proxyPort = await allocatePort();
-
-    await startGateway(proxyPort, {
+    const proxyPort = await startGateway({
       primary: { url: `ws://127.0.0.1:${String(primaryPort)}`, appendChargeBoxId: true },
       secondaries: [],
     });

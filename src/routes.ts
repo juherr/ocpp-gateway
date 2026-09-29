@@ -41,12 +41,12 @@ function parseUrl(value: unknown, where: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${where} must have a non-empty string url`);
   }
-  if (!URL.canParse(value)) {
+  const url = URL.parse(value);
+  if (!url) {
     throw new Error(`${where} url "${value}" is not a valid URL`);
   }
-  // `new WebSocket()` throws synchronously on any other scheme, which would
-  // crash the gateway on the first charger connection instead of at load time.
-  if (!DIALABLE_PROTOCOLS.has(new URL(value).protocol)) {
+  // Early feedback only: connection setup also survives URLs ws refuses to dial.
+  if (!DIALABLE_PROTOCOLS.has(url.protocol)) {
     throw new Error(`${where} url "${value}" must use ws:, wss:, http: or https:`);
   }
   return value;

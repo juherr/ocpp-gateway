@@ -1,10 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
-interface Entry<T> {
-  session: T;
-  authHeader: string | undefined;
-}
-
 /**
  * Tracks the live charger sessions per chargeBoxId so a reconnecting charger
  * can replace its own stale session (some CSMS reject a second connection for
@@ -17,7 +12,8 @@ interface Entry<T> {
  * mismatched newcomer runs alongside the existing session, and the CSMS decides.
  */
 export class SessionRegistry<T extends { teardown(): void }> {
-  private readonly sessions = new Map<string, Set<Entry<T>>>();
+  /** chargeBoxId → (live session → the Authorization header it was opened with). */
+  private readonly sessions = new Map<string, Map<T, string | undefined>>();
 
   /**
    * Tear down the live sessions for `id` that were opened with the same
@@ -30,10 +26,10 @@ export class SessionRegistry<T extends { teardown(): void }> {
 
     let replaced = 0;
     let kept = 0;
-    // Copy first: teardown() ends the session, which calls remove() on this set.
-    for (const entry of [...entries]) {
-      if (sameCredentials(entry.authHeader, authHeader)) {
-        entry.session.teardown();
+    // Copy first: teardown() ends the session, which calls remove() on this map.
+    for (const [session, sessionAuth] of [...entries]) {
+      if (sameCredentials(sessionAuth, authHeader)) {
+        session.teardown();
         replaced += 1;
       } else {
         kept += 1;
@@ -45,18 +41,16 @@ export class SessionRegistry<T extends { teardown(): void }> {
   add(id: string, authHeader: string | undefined, session: T): void {
     let entries = this.sessions.get(id);
     if (!entries) {
-      entries = new Set();
+      entries = new Map();
       this.sessions.set(id, entries);
     }
-    entries.add({ session, authHeader });
+    entries.set(session, authHeader);
   }
 
   remove(id: string, session: T): void {
     const entries = this.sessions.get(id);
     if (!entries) return;
-    for (const entry of entries) {
-      if (entry.session === session) entries.delete(entry);
-    }
+    entries.delete(session);
     if (entries.size === 0) this.sessions.delete(id);
   }
 }
