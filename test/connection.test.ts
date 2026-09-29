@@ -9,6 +9,7 @@ interface WsConnectCall {
 }
 
 let connectCalls: WsConnectCall[] = [];
+let closeCodes: (number | undefined)[] = [];
 
 /*
  * ChargerConnection creates outbound WebSocket instances internally. Mocking
@@ -29,6 +30,8 @@ vi.mock("ws", () => {
     }
 
     constructor(url: string | null, protocols?: string | string[]) {
+      // Like the real ws, reject some URLs synchronously from the constructor.
+      if (url?.includes("#")) throw new SyntaxError("The URL contains a fragment identifier");
       if (url !== null) {
         connectCalls.push({ url, protocols });
       }
@@ -37,7 +40,8 @@ vi.mock("ws", () => {
     send() {
       return undefined;
     }
-    close() {
+    close(code?: number) {
+      closeCodes.push(code);
       this.readyState = MockWebSocket.CLOSED;
     }
     ping() {
@@ -55,6 +59,7 @@ vi.mock("ws", () => {
 
 beforeEach(() => {
   connectCalls = [];
+  closeCodes = [];
 });
 
 function createMockChargerSocket() {
@@ -109,6 +114,7 @@ describe("ChargerConnection", () => {
         { primary, secondaries: [secondary] },
         protocol,
         undefined,
+        () => undefined,
       );
 
       expect(connectCalls).toEqual([
@@ -117,4 +123,61 @@ describe("ChargerConnection", () => {
       ]);
     },
   );
+
+  it("skips a secondary that ws refuses to dial without affecting the primary", () => {
+    const charger = createMockChargerSocket();
+
+    expect(
+      () =>
+        new ChargerConnection(
+          charger,
+          "cp-abc",
+          {
+            primary: { url: "ws://csms.example/ocpp", appendChargeBoxId: true },
+            secondaries: [
+              { url: "ws://broken.example/ocpp#fragment", appendChargeBoxId: false },
+              { url: "ws://mirror.example/ocpp", appendChargeBoxId: true },
+            ],
+          },
+          "ocpp1.6",
+          undefined,
+          () => undefined,
+        ),
+    ).not.toThrow();
+
+    expect(connectCalls.map((call) => call.url)).toEqual([
+      "ws://csms.example/ocpp/cp-abc",
+      "ws://mirror.example/ocpp/cp-abc",
+    ]);
+    expect(closeCodes).toEqual([]);
+  });
+
+  it("closes the charger instead of throwing when ws refuses to dial the primary", async () => {
+    const charger = createMockChargerSocket();
+    const onEnd = vi.fn();
+
+    expect(
+      () =>
+        new ChargerConnection(
+          charger,
+          "cp-abc",
+          {
+            primary: { url: "ws://csms.example/ocpp#fragment", appendChargeBoxId: false },
+            secondaries: [{ url: "ws://mirror.example/ocpp", appendChargeBoxId: true }],
+          },
+          "ocpp1.6",
+          undefined,
+          onEnd,
+        ),
+    ).not.toThrow();
+
+    // The session ends asynchronously, like any other primary failure, so the
+    // caller can finish registering it first.
+    expect(onEnd).not.toHaveBeenCalled();
+    await Promise.resolve();
+
+    expect(connectCalls).toEqual([]);
+    expect(closeCodes[0]).toBe(1011);
+    expect(onEnd).toHaveBeenCalledOnce();
+  });
 });

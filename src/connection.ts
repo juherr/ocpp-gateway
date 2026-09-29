@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 import { createLogger } from "./logger";
-import { type Backend, type Route, buildTargetUrl } from "./routes";
+import { type Route, buildTargetUrl } from "./routes";
 import { OCPP_SUBPROTOCOLS } from "./types";
 import { forwardPing, forwardPong, rawDataToString } from "./utils/websocket";
 
@@ -45,27 +45,46 @@ export class ChargerConnection {
     private readonly route: Route,
     private readonly protocol: string,
     private readonly authHeader: string | undefined,
-    private readonly endCallback?: () => void,
+    private readonly onEnd: () => void,
   ) {
     this.log = createLogger(chargePointId);
     this.setup();
   }
 
   private setup() {
-    const primaryUrl = this.resolveUrl(this.route.primary);
-    this.primary = this.connectPrimary(primaryUrl);
+    // `new WebSocket()` throws synchronously on URLs it refuses to dial (bad
+    // scheme, fragment, …). Never let that escape into the server's connection
+    // handler: it would crash the gateway for every charger.
+    const primaryUrl = buildTargetUrl(this.route.primary, this.chargePointId);
+    try {
+      this.primary = this.connectPrimary(primaryUrl);
+    } catch (err) {
+      this.log.error("primary error", { url: primaryUrl, error: errorMessage(err) });
+      // Fail like an unreachable primary, once the caller has registered us.
+      queueMicrotask(() => {
+        this.charger.close(1011, "Primary CSMS unreachable");
+        this.teardown();
+      });
+      return;
+    }
 
     for (const backend of this.route.secondaries) {
       const state: SecondaryState = {
-        url: this.resolveUrl(backend),
+        url: buildTargetUrl(backend, this.chargePointId),
         ws: null,
         queue: [],
         keepalive: null,
         reconnectTimer: null,
         lastPongAt: Date.now(),
       };
+      try {
+        state.ws = this.connectSecondary(state);
+      } catch (err) {
+        // A secondary must never affect the charger or the primary: skip it.
+        this.log.error("secondary skipped", { url: state.url, error: errorMessage(err) });
+        continue;
+      }
       this.secondaries.push(state);
-      state.ws = this.connectSecondary(state);
     }
 
     this.charger.on("message", (data) => {
@@ -81,11 +100,7 @@ export class ChargerConnection {
           try {
             sec.ws.send(raw);
           } catch (err) {
-            /* best-effort */
-            this.log.warn("secondary send failed", {
-              url: sec.url,
-              error: err instanceof Error ? err.message : String(err),
-            });
+            this.log.warn("secondary send failed", { url: sec.url, error: errorMessage(err) });
           }
         } else {
           this.enqueueForSecondary(sec, raw);
@@ -300,10 +315,6 @@ export class ChargerConnection {
     }, SECONDARY_RECONNECT_DELAY_MS);
   }
 
-  private resolveUrl(backend: Backend): string {
-    return buildTargetUrl(backend, this.chargePointId);
-  }
-
   private buildHeaders(): Record<string, string> {
     const headers: Record<string, string> = {};
     if (this.authHeader) {
@@ -336,6 +347,10 @@ export class ChargerConnection {
     close(this.charger);
 
     this.log.info("session ended");
-    this.endCallback?.();
+    this.onEnd();
   }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

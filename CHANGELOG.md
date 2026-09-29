@@ -49,9 +49,7 @@ global primary/secondary configuration. Nothing has been released yet.
   upstream target URL is built as `<baseUrl>/<chargeBoxId>` (query parameters
   are kept), unless the backend opts out with `appendChargeBoxId: false`.
 - Backend URLs in the routing table are validated when the table loads: they
-  must parse and use `ws:`, `wss:`, `http:` or `https:`. Previously a typo such
-  as `htps://` in any backend (even a secondary) crashed the whole gateway on
-  the first charger connection.
+  must parse and use `ws:`, `wss:`, `http:` or `https:`.
 - Stricter environment parsing (from upstream): an invalid `PORT`, `LOG_LEVEL`
   or `LOG_DEBUG_MESSAGE_MAX_LENGTH` now stops the gateway at startup with a
   message naming the variable, instead of silently falling back.
@@ -66,6 +64,11 @@ global primary/secondary configuration. Nothing has been released yet.
   source of truth for local dev, CI (`jdx/mise-action`), and the Docker images.
 
 ### Fixed
+
+- A backend URL the WebSocket client refuses to dial (e.g. a typo such as
+  `htps://`, or a `#fragment`) no longer crashes the whole gateway on the first
+  charger connection: such a secondary is skipped (and logged), and such a
+  primary closes the charger session like an unreachable CSMS.
 
 - Charger reconnect loop caused by a stale session (from upstream): when a
   charger reconnects with an id that still has a live session, the old session
