@@ -32,7 +32,7 @@ ROUTES_FILE=./routes.json npm start
 CI validates every PR and push to `main`:
 
 - `.github/workflows/commitlint.yml` — lints commit messages against Conventional Commits (the CI counterpart to the local `commit-msg` hook, which `--no-verify` can bypass).
-- `.github/workflows/docker.yml` — a `test` job (lint + typecheck + build + `npm test`), a `cloudflare` job (`deploy/cloudflare`: `npm ci`, `npm run typecheck`, `npm run dry-run` — validates `wrangler.jsonc` and builds the container image, no credentials needed), and, only if both pass, a `build` job publishing a multi-arch image to `ghcr.io/juherr/ocpp-gateway`. Image tags are **semver-pinned** (`flavor: latest=false` — never publish `latest`).
+- `.github/workflows/docker.yml` — a `test` job (lint + typecheck + build + `npm test`), a `cloudflare` job (`deploy/cloudflare`: `npm ci`, `npm run typecheck`, `npm run dry-run` — validates `wrangler.jsonc` and builds the container image, no credentials needed), a `cloudflare-smoke` job (runs the Worker + gateway container under `wrangler dev` with the runner's Docker and drives them with `deploy/cloudflare/test/smoke.test.ts`), and, only if all three pass, a `build` job publishing a multi-arch image to `ghcr.io/juherr/ocpp-gateway`. Image tags are **semver-pinned** (`flavor: latest=false` — never publish `latest`).
 
 Both workflows install Node via `jdx/mise-action`, which reads the version from `mise.toml` — the single source of truth shared with local dev and the Docker images (Node 24, the current LTS). GitHub Actions are pinned to commit SHAs with a `# vX.Y.Z` comment; Dependabot (`.github/dependabot.yml`) keeps npm, actions, and Docker deps current.
 

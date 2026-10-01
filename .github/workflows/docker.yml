@@ -54,8 +54,51 @@ jobs:
 
       - run: npm run dry-run
 
+  # Runs the Worker and the gateway image together under `wrangler dev`
+  # (workerd + the runner's Docker, no Cloudflare credentials) and drives them
+  # end to end with deploy/cloudflare/test/smoke.test.ts. The mock CSMS listen
+  # on the runner; the container reaches them at host.docker.internal, which
+  # workerd maps to the host gateway.
+  cloudflare-smoke:
+    runs-on: ubuntu-latest
+    env:
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+
+      - run: npm ci
+
+      - run: npm ci
+        working-directory: deploy/cloudflare
+
+      - name: Start the Worker and the gateway container
+        working-directory: deploy/cloudflare
+        run: |
+          cp .dev.vars.example .dev.vars
+          npm run dev -- --ip 127.0.0.1 --port 8787 > "$RUNNER_TEMP/wrangler-dev.log" 2>&1 &
+          for _ in $(seq 1 300); do
+            grep -q 'Ready on' "$RUNNER_TEMP/wrangler-dev.log" && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/wrangler-dev.log"
+          exit 1
+
+      - run: npx vitest run deploy/cloudflare/test/smoke.test.ts
+        env:
+          SMOKE_GATEWAY_URL: http://127.0.0.1:8787
+
+      - name: Worker and gateway logs
+        if: always()
+        run: |
+          cat "$RUNNER_TEMP/wrangler-dev.log" || true
+          for container in $(docker ps -aq --filter name=workerd-ocpp-gateway); do
+            docker logs "$container" 2>&1 || true
+          done
+
   build:
-    needs: [test, cloudflare]
+    needs: [test, cloudflare, cloudflare-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read

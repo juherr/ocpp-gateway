@@ -33,17 +33,30 @@ export async function startGateway(table: object, overrides: Partial<Config> = {
   };
 }
 
-/** A mock CSMS that records what it receives and replies with a tagged result. */
-export function makeCsms(tag: string) {
+/** A BootNotification CALL with a payload valid under OCPP 1.6. */
+export const boot = (id: string) =>
+  JSON.stringify([2, id, "BootNotification", { chargePointVendor: "Test", chargePointModel: "X" }]);
+
+/** One upstream connection a mock CSMS accepted. */
+export interface CsmsConnection {
+  ws: WebSocket;
+  auth?: string;
+  protocol: string;
+  path?: string;
+  host?: string;
+}
+
+/**
+ * A mock CSMS that records what it receives and replies with a tagged result.
+ * Listens on an ephemeral port unless `port` is given.
+ */
+export function makeCsms(tag: string, port = 0) {
   const received: string[] = [];
-  let connections = 0;
-  let auth: string | undefined;
-  let protocol: string | undefined;
-  let path: string | undefined;
-  let host: string | undefined;
+  const connections: CsmsConnection[] = [];
+  const last = () => connections.at(-1);
 
   const wss = new WebSocketServer({
-    port: 0,
+    port,
     handleProtocols: (protocols) => {
       for (const p of OCPP_SUBPROTOCOLS) if (protocols.has(p)) return p;
       return false;
@@ -51,11 +64,13 @@ export function makeCsms(tag: string) {
   });
 
   wss.on("connection", (ws, req) => {
-    connections += 1;
-    auth = req.headers.authorization;
-    protocol = ws.protocol;
-    path = req.url;
-    host = req.headers.host;
+    connections.push({
+      ws,
+      auth: req.headers.authorization,
+      protocol: ws.protocol,
+      path: req.url,
+      host: req.headers.host,
+    });
     ws.on("message", (data) => {
       received.push(data.toString());
       ws.send(JSON.stringify([3, "reply", { from: tag }]));
@@ -65,11 +80,13 @@ export function makeCsms(tag: string) {
   return {
     wss,
     received: () => received,
-    connected: () => connections > 0,
-    auth: () => auth,
-    protocol: () => protocol,
-    path: () => path,
-    host: () => host,
+    /** Every connection accepted so far, oldest first. */
+    connections: () => connections,
+    connected: () => connections.length > 0,
+    auth: () => last()?.auth,
+    protocol: () => last()?.protocol,
+    path: () => last()?.path,
+    host: () => last()?.host,
     port: () => (wss.address() as AddressInfo).port,
     url: () => `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`,
     close: () => wss.close(),

@@ -14,7 +14,11 @@
     "TENANT_BASE_DOMAIN": "ocpp.example.com",
     "LOG_LEVEL": "info",
   },
-  // ROUTES_JSON is a secret: wrangler secret put ROUTES_JSON < routes.json
+  // `wrangler deploy` fails until ROUTES_JSON is set (see README: Deploy).
+  "secrets": { "required": ["ROUTES_JSON"] },
+
+  // Container stdout (the gateway's logs) in the dashboard and live tail.
+  "observability": { "enabled": true },
 
   "containers": [
     {

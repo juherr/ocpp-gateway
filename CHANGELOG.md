@@ -32,6 +32,10 @@ global primary/secondary configuration. Nothing has been released yet.
 - Cloudflare deployment example (`deploy/cloudflare/`): a minimal Worker in
   front of a Cloudflare Container running the unchanged image, which strips
   client-supplied internal headers and injects the trusted hostname.
+  `wrangler deploy` fails while the `ROUTES_JSON` secret is unset, the
+  gateway's logs reach the Cloudflare dashboard (observability), and an
+  end-to-end smoke test runs against the Worker + Container under
+  `wrangler dev`, in CI too (`cloudflare-smoke` job).
 - Per-chargeBoxId routing table loaded from a JSON file (`ROUTES_FILE`, default
   `./routes.json`): a required `default` route and optional exact-match
   `chargers` overrides, each with one `primary` and any number of read-only
@@ -98,6 +102,13 @@ global primary/secondary configuration. Nothing has been released yet.
   and the primary socket, so ping/pong frames are only forwarded end-to-end.
 - Failed sends to a secondary are now logged as warnings instead of being
   silently ignored (from upstream).
+
+### Security
+
+- Backend URLs are redacted wherever the gateway logs them or echoes them in a
+  routes file error: userinfo, query parameter values and the fragment are
+  masked, so credentials in a CSMS URL never reach the logs (now collected by
+  Cloudflare observability in the Cloudflare example).
 
 ### Preserved
 

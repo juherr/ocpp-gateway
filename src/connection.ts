@@ -3,6 +3,7 @@ import { createLogger } from "./logger";
 import { type Route, buildTargetUrl } from "./routes";
 import { type SessionKey, formatSessionKey } from "./sessions";
 import { OCPP_SUBPROTOCOLS } from "./types";
+import { redactUrl } from "./utils/url";
 import { forwardPing, forwardPong, rawDataToString } from "./utils/websocket";
 
 /**
@@ -27,6 +28,8 @@ const SECONDARY_MAX_QUEUE = 100;
 
 interface SecondaryState {
   url: string;
+  /** `url` without credentials: the only form that may be logged. */
+  logUrl: string;
   ws: WebSocket | null;
   queue: string[];
   keepalive: ReturnType<typeof setInterval> | null;
@@ -58,10 +61,11 @@ export class ChargerConnection {
     // scheme, fragment, …). Never let that escape into the server's connection
     // handler: it would crash the gateway for every charger.
     const primaryUrl = buildTargetUrl(this.route.primary, this.key.chargeBoxId);
+    const primaryLogUrl = redactUrl(primaryUrl);
     try {
-      this.primary = this.connectPrimary(primaryUrl);
+      this.primary = this.connectPrimary(primaryUrl, primaryLogUrl);
     } catch (err) {
-      this.log.error("primary error", { url: primaryUrl, error: errorMessage(err) });
+      this.log.error("primary error", { url: primaryLogUrl, error: errorMessage(err) });
       // Fail like an unreachable primary, once the caller has registered us.
       queueMicrotask(() => {
         this.charger.close(1011, "Primary CSMS unreachable");
@@ -71,8 +75,10 @@ export class ChargerConnection {
     }
 
     for (const backend of this.route.secondaries) {
+      const url = buildTargetUrl(backend, this.key.chargeBoxId);
       const state: SecondaryState = {
-        url: buildTargetUrl(backend, this.key.chargeBoxId),
+        url,
+        logUrl: redactUrl(url),
         ws: null,
         queue: [],
         keepalive: null,
@@ -83,7 +89,7 @@ export class ChargerConnection {
         state.ws = this.connectSecondary(state);
       } catch (err) {
         // A secondary must never affect the charger or the primary: skip it.
-        this.log.error("secondary skipped", { url: state.url, error: errorMessage(err) });
+        this.log.error("secondary skipped", { url: state.logUrl, error: errorMessage(err) });
         continue;
       }
       this.secondaries.push(state);
@@ -102,7 +108,7 @@ export class ChargerConnection {
           try {
             sec.ws.send(raw);
           } catch (err) {
-            this.log.warn("secondary send failed", { url: sec.url, error: errorMessage(err) });
+            this.log.warn("secondary send failed", { url: sec.logUrl, error: errorMessage(err) });
           }
         } else {
           this.enqueueForSecondary(sec, raw);
@@ -131,8 +137,8 @@ export class ChargerConnection {
     });
 
     this.log.info("session started", {
-      primary: primaryUrl,
-      secondaries: this.secondaries.map((secondary) => secondary.url),
+      primary: primaryLogUrl,
+      secondaries: this.secondaries.map((secondary) => secondary.logUrl),
       protocol: this.protocol,
     });
   }
@@ -143,7 +149,7 @@ export class ChargerConnection {
    * tears the whole session down (chargers expect to talk to exactly one
    * CSMS at a time).
    */
-  private connectPrimary(url: string): WebSocket {
+  private connectPrimary(url: string, logUrl: string): WebSocket {
     const ws = new WebSocket(url, this.protocol ? [this.protocol] : OCPP_SUBPROTOCOLS, {
       headers: this.buildHeaders(),
       handshakeTimeout: 10_000,
@@ -151,7 +157,7 @@ export class ChargerConnection {
     });
 
     ws.on("open", () => {
-      this.log.info("primary connected", { url });
+      this.log.info("primary connected", { url: logUrl });
     });
 
     ws.on("message", (data) => {
@@ -164,7 +170,7 @@ export class ChargerConnection {
 
     ws.on("close", (code, reason) => {
       this.log.warn("primary disconnected", {
-        url,
+        url: logUrl,
         code,
         reason: reason.toString(),
       });
@@ -173,7 +179,7 @@ export class ChargerConnection {
     });
 
     ws.on("error", (err) => {
-      this.log.error("primary error", { url, error: err.message });
+      this.log.error("primary error", { url: logUrl, error: err.message });
       if (this.alive) {
         this.charger.close(1011, "Primary CSMS unreachable");
         this.teardown();
@@ -203,7 +209,7 @@ export class ChargerConnection {
     });
 
     ws.on("open", () => {
-      this.log.info("secondary connected", { url: state.url });
+      this.log.info("secondary connected", { url: state.logUrl });
       state.lastPongAt = Date.now();
       this.flushSecondaryQueue(state, ws);
       this.startSecondaryKeepalive(state, ws);
@@ -215,7 +221,7 @@ export class ChargerConnection {
         state.lastPongAt = Date.now();
         return;
       }
-      this.log.debugOcppFrame("secondary response (ignored)", raw, { url: state.url });
+      this.log.debugOcppFrame("secondary response (ignored)", raw, { url: state.logUrl });
     });
 
     ws.on("pong", () => {
@@ -224,7 +230,7 @@ export class ChargerConnection {
 
     ws.on("close", (code, reason) => {
       this.log.warn("secondary disconnected", {
-        url: state.url,
+        url: state.logUrl,
         code,
         reason: reason.toString(),
       });
@@ -234,7 +240,7 @@ export class ChargerConnection {
 
     ws.on("error", (err) => {
       this.log.error("secondary error", {
-        url: state.url,
+        url: state.logUrl,
         error: err.message,
       });
     });
@@ -246,7 +252,7 @@ export class ChargerConnection {
     if (state.queue.length >= SECONDARY_MAX_QUEUE) {
       state.queue.shift();
       this.log.warn("secondary queue full, dropping oldest message", {
-        url: state.url,
+        url: state.logUrl,
         max: SECONDARY_MAX_QUEUE,
       });
     }
@@ -256,7 +262,7 @@ export class ChargerConnection {
   private flushSecondaryQueue(state: SecondaryState, ws: WebSocket) {
     if (state.queue.length === 0) return;
     this.log.info("secondary flushing queued messages", {
-      url: state.url,
+      url: state.logUrl,
       count: state.queue.length,
     });
     for (const msg of state.queue) {
@@ -276,7 +282,7 @@ export class ChargerConnection {
 
       if (Date.now() - state.lastPongAt > SECONDARY_PONG_TIMEOUT_MS) {
         this.log.warn("secondary pong timeout, forcing reconnect", {
-          url: state.url,
+          url: state.logUrl,
         });
         try {
           ws.close(4000, "pong timeout");
@@ -306,7 +312,7 @@ export class ChargerConnection {
     if (state.reconnectTimer !== null) return;
 
     this.log.info("secondary reconnecting", {
-      url: state.url,
+      url: state.logUrl,
       delayMs: SECONDARY_RECONNECT_DELAY_MS,
     });
 

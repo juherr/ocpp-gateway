@@ -7,6 +7,7 @@ import type { RouteStore } from "./routes";
 import { type SessionKey, SessionRegistry } from "./sessions";
 import { HostnameTenantResolver, type TenantResolver, readSingleHeader } from "./tenants";
 import { OCPP_SUBPROTOCOLS } from "./types";
+import { redactUrl } from "./utils/url";
 
 const log = createLogger("proxy");
 
@@ -95,8 +96,8 @@ export function startProxy(
       chargePointId,
       protocol: protocol || "none",
       ip: req.socket.remoteAddress,
-      primary: route.primary.url,
-      secondaries: route.secondaries.map((backend) => backend.url),
+      primary: redactUrl(route.primary.url),
+      secondaries: route.secondaries.map((backend) => redactUrl(backend.url)),
     });
 
     // Replace this charger's stale session, if any: some CSMS reject a new

@@ -3,6 +3,7 @@ import { type FSWatcher, watch } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { createLogger } from "./logger";
 import { type TenantId, isTenantId, parseHostname } from "./tenants";
+import { redactUrl } from "./utils/url";
 
 const log = createLogger("routes");
 
@@ -55,11 +56,11 @@ function parseUrl(value: unknown, where: string): string {
   }
   const url = URL.parse(value);
   if (!url) {
-    throw new Error(`${where} url "${value}" is not a valid URL`);
+    throw new Error(`${where} url is not a valid URL`);
   }
   // Early feedback only: connection setup also survives URLs ws refuses to dial.
   if (!DIALABLE_PROTOCOLS.has(url.protocol)) {
-    throw new Error(`${where} url "${value}" must use ws:, wss:, http: or https:`);
+    throw new Error(`${where} url "${redactUrl(value)}" must use ws:, wss:, http: or https:`);
   }
   return value;
 }
