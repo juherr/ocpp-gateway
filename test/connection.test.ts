@@ -110,7 +110,7 @@ describe("ChargerConnection", () => {
 
       new ChargerConnection(
         charger,
-        "cp-abc",
+        { tenantId: null, chargeBoxId: "cp-abc" },
         { primary, secondaries: [secondary] },
         protocol,
         undefined,
@@ -131,7 +131,7 @@ describe("ChargerConnection", () => {
       () =>
         new ChargerConnection(
           charger,
-          "cp-abc",
+          { tenantId: null, chargeBoxId: "cp-abc" },
           {
             primary: { url: "ws://csms.example/ocpp", appendChargeBoxId: true },
             secondaries: [
@@ -160,7 +160,7 @@ describe("ChargerConnection", () => {
       () =>
         new ChargerConnection(
           charger,
-          "cp-abc",
+          { tenantId: null, chargeBoxId: "cp-abc" },
           {
             primary: { url: "ws://csms.example/ocpp#fragment", appendChargeBoxId: false },
             secondaries: [{ url: "ws://mirror.example/ocpp", appendChargeBoxId: true }],

@@ -6,6 +6,7 @@ import {
   parseInteger,
   parseIntegerInRange,
   parsePositiveInteger,
+  parseOptionalHeaderName,
   parseOptionalPositiveInteger,
   parseStringUnion,
 } from "../src/utils/value-parsers";
@@ -174,6 +175,20 @@ describe("parseStringUnion", () => {
     expect(() => parseStringUnion("third", values, "first")).toThrow(
       'Invalid value: "third". Expected one of: first, second.',
     );
+  });
+});
+
+describe("parseOptionalHeaderName", () => {
+  it.each([undefined, "", "   "])("treats %j as unset", (value) => {
+    expect(parseOptionalHeaderName(value)).toBeUndefined();
+  });
+
+  it("trims and lowercases a header name", () => {
+    expect(parseOptionalHeaderName(" X-Forwarded-Host ")).toBe("x-forwarded-host");
+  });
+
+  it.each(["X Forwarded Host", "x-host:", "x-höst"])("rejects %j", (value) => {
+    expect(() => parseOptionalHeaderName(value)).toThrow(`Invalid HTTP header name: "${value}"`);
   });
 });
 

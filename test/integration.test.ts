@@ -1,56 +1,7 @@
 import { once } from "node:events";
-import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
-import { WebSocket, WebSocketServer } from "ws";
-import { OCPP_SUBPROTOCOLS } from "../src/types";
-import { sleep, startGateway } from "./helpers";
-
-/** A mock CSMS that records what it receives and replies with a tagged result. */
-function makeCsms(tag: string) {
-  const received: string[] = [];
-  let connections = 0;
-  let auth: string | undefined;
-  let protocol: string | undefined;
-  let path: string | undefined;
-
-  const wss = new WebSocketServer({
-    port: 0,
-    handleProtocols: (protocols) => {
-      for (const p of OCPP_SUBPROTOCOLS) if (protocols.has(p)) return p;
-      return false;
-    },
-  });
-
-  wss.on("connection", (ws, req) => {
-    connections += 1;
-    auth = req.headers.authorization;
-    protocol = ws.protocol;
-    path = req.url;
-    ws.on("message", (data) => {
-      received.push(data.toString());
-      ws.send(JSON.stringify([3, "reply", { from: tag }]));
-    });
-  });
-
-  return {
-    wss,
-    received: () => received,
-    connected: () => connections > 0,
-    auth: () => auth,
-    protocol: () => protocol,
-    path: () => path,
-    port: () => (wss.address() as AddressInfo).port,
-    close: () => wss.close(),
-  };
-}
-
-async function waitFor(cond: () => boolean, timeout = 2000): Promise<void> {
-  const start = Date.now();
-  while (!cond()) {
-    if (Date.now() - start > timeout) throw new Error("waitFor timed out");
-    await new Promise((r) => setTimeout(r, 15));
-  }
-}
+import { WebSocket } from "ws";
+import { makeCsms, sleep, startGateway, waitFor } from "./helpers";
 
 interface Harness {
   proxyPort: number;

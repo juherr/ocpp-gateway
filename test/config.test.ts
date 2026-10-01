@@ -7,6 +7,8 @@ describe("loadConfig", () => {
     "LOG_LEVEL",
     "LOG_DEBUG_MESSAGE_MAX_LENGTH",
     "PORT",
+    "TENANT_BASE_DOMAIN",
+    "TENANT_HOST_HEADER",
   ] as const;
 
   beforeEach(() => {
@@ -26,6 +28,28 @@ describe("loadConfig", () => {
     expect(config.routesFile).toBe("./routes.json");
     expect(config.loggerConfig.logLevel).toBe("info");
     expect(config.loggerConfig.debugMessageMaxLength).toBe(120);
+    expect(config.tenantBaseDomain).toBeUndefined();
+    expect(config.tenantHostHeader).toBeUndefined();
+  });
+
+  it("normalises TENANT_BASE_DOMAIN", () => {
+    vi.stubEnv("TENANT_BASE_DOMAIN", "OCPP.Example.com.");
+
+    expect(loadConfig().tenantBaseDomain).toBe("ocpp.example.com");
+  });
+
+  it("normalises TENANT_HOST_HEADER to lowercase", () => {
+    vi.stubEnv("TENANT_HOST_HEADER", "X-Forwarded-Host");
+
+    expect(loadConfig().tenantHostHeader).toBe("x-forwarded-host");
+  });
+
+  it.each(["TENANT_BASE_DOMAIN", "TENANT_HOST_HEADER"])("treats an empty %s as unset", (name) => {
+    vi.stubEnv(name, "  ");
+
+    const config = loadConfig();
+    expect(config.tenantBaseDomain).toBeUndefined();
+    expect(config.tenantHostHeader).toBeUndefined();
   });
 
   it("reads ROUTES_FILE", () => {
@@ -77,6 +101,21 @@ describe("loadConfig", () => {
       envName: "LOG_DEBUG_MESSAGE_MAX_LENGTH",
       value: "abc",
       expectedCause: 'Invalid integer: "abc"',
+    },
+    {
+      envName: "TENANT_BASE_DOMAIN",
+      value: "ocpp.example.com:443",
+      expectedCause: 'Invalid hostname: "ocpp.example.com:443"',
+    },
+    {
+      envName: "TENANT_BASE_DOMAIN",
+      value: "*.ocpp.example.com",
+      expectedCause: 'Invalid hostname: "*.ocpp.example.com"',
+    },
+    {
+      envName: "TENANT_HOST_HEADER",
+      value: "X Forwarded Host",
+      expectedCause: 'Invalid HTTP header name: "X Forwarded Host"',
     },
     {
       envName: "LOG_LEVEL",

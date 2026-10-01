@@ -67,6 +67,16 @@ export function parseBoolean(value: string | undefined, defaultValue: boolean): 
   throw new Error(`Invalid boolean value: "${value}". Expected one of: true, false.`);
 }
 
+const HTTP_TOKEN = /^[!#$%&'*+.^_`|~0-9a-z-]+$/;
+
+/** An optional HTTP header name, lowercased; empty means unset. */
+export function parseOptionalHeaderName(value: string | undefined): string | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const name = value.trim().toLowerCase();
+  if (!HTTP_TOKEN.test(name)) throw new Error(`Invalid HTTP header name: "${value}"`);
+  return name;
+}
+
 function isAllowedValue<T extends string>(value: string, allowedValues: readonly T[]): value is T {
   return allowedValues.some((allowedValue) => allowedValue === value);
 }

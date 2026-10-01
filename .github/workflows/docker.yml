@@ -30,8 +30,32 @@ jobs:
 
       - run: npm test
 
+  # The Cloudflare example is its own package (own tsconfig and Wrangler
+  # config), outside the root gates above. Its runtime-agnostic forward.ts is
+  # already tested by `npm test`; this checks the Worker entrypoint against the
+  # Workers/Containers types and validates wrangler.jsonc. The dry run also
+  # builds the container image from the root Dockerfile (no Cloudflare
+  # credentials needed, nothing is deployed).
+  cloudflare:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/cloudflare
+    env:
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm run dry-run
+
   build:
-    needs: test
+    needs: [test, cloudflare]
     runs-on: ubuntu-latest
     permissions:
       contents: read

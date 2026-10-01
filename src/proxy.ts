@@ -4,7 +4,8 @@ import type { Config } from "./config";
 import { ChargerConnection } from "./connection";
 import { createLogger } from "./logger";
 import type { RouteStore } from "./routes";
-import { SessionRegistry } from "./sessions";
+import { type SessionKey, SessionRegistry } from "./sessions";
+import { HostnameTenantResolver, type TenantResolver, readSingleHeader } from "./tenants";
 import { OCPP_SUBPROTOCOLS } from "./types";
 
 const log = createLogger("proxy");
@@ -15,11 +16,21 @@ const log = createLogger("proxy");
  * Chargers connect via:
  *   ws(s)://proxy-host:port/<chargeBoxId>
  *
- * The chargeBoxId (last path segment) is resolved against the routing table
- * to pick a primary CSMS and optional read-only secondaries; the same id is
- * then appended to each upstream URL unless that backend opts out.
+ * The tenant is resolved from the hostname the charger dialled (the `Host`
+ * header, or `config.tenantHostHeader` behind a trusted reverse proxy). The
+ * (tenant, chargeBoxId) pair — the chargeBoxId being the last path segment —
+ * is resolved against the routing table to pick a primary CSMS and optional
+ * read-only secondaries; the id is then appended to each upstream URL unless
+ * that backend opts out.
  */
-export function startProxy(config: Config, routes: RouteStore) {
+export function startProxy(
+  config: Config,
+  routes: RouteStore,
+  tenants: TenantResolver = new HostnameTenantResolver({
+    baseDomain: config.tenantBaseDomain,
+    lookupHostname: (hostname) => routes.findTenantByHostname(hostname),
+  }),
+) {
   const sessions = new SessionRegistry<ChargerConnection>();
 
   const server = createServer((req, res) => {
@@ -49,11 +60,38 @@ export function startProxy(config: Config, routes: RouteStore) {
       return;
     }
 
+    // Fail closed: a missing or duplicated host header (or trusted header) is
+    // ambiguous, so it must never fall back to the global routes.
+    const hostHeader = config.tenantHostHeader ?? "host";
+    const host = readSingleHeader(req.rawHeaders, hostHeader);
+    if (host === null) {
+      log.warn("rejected connection: missing or duplicated host header", {
+        header: hostHeader,
+        chargePointId,
+        ip: req.socket.remoteAddress,
+      });
+      ws.close(1008, "Missing or ambiguous host");
+      return;
+    }
+    const tenantId = tenants.resolve(host);
+    const route = routes.resolve(tenantId, chargePointId);
+    if (!route) {
+      log.warn("rejected connection: no route", {
+        tenantId,
+        host,
+        chargePointId,
+        ip: req.socket.remoteAddress,
+      });
+      ws.close(1008, "No route for this charge point");
+      return;
+    }
+
+    const key: SessionKey = { tenantId, chargeBoxId: chargePointId };
     const protocol = ws.protocol;
     const authHeader = req.headers.authorization;
-    const route = routes.resolve(chargePointId);
 
     log.info("charger connected", {
+      tenantId,
       chargePointId,
       protocol: protocol || "none",
       ip: req.socket.remoteAddress,
@@ -65,20 +103,21 @@ export function startProxy(config: Config, routes: RouteStore) {
     // connection while the old one is still open, forcing a reconnect loop.
     // Only sessions opened with the same credentials are replaced (see
     // SessionRegistry).
-    const { replaced, kept } = sessions.evict(chargePointId, authHeader);
-    if (replaced > 0) log.info("replaced existing session", { chargePointId, replaced });
+    const { replaced, kept } = sessions.evict(key, authHeader);
+    if (replaced > 0) log.info("replaced existing session", { tenantId, chargePointId, replaced });
     if (kept > 0) {
       log.warn("existing session kept: new connection has different credentials", {
+        tenantId,
         chargePointId,
         kept,
         ip: req.socket.remoteAddress,
       });
     }
 
-    const conn = new ChargerConnection(ws, chargePointId, route, protocol, authHeader, () => {
-      sessions.remove(chargePointId, conn);
+    const conn = new ChargerConnection(ws, key, route, protocol, authHeader, () => {
+      sessions.remove(key, conn);
     });
-    sessions.add(chargePointId, authHeader, conn);
+    sessions.add(key, authHeader, conn);
   });
 
   wss.on("error", (err) => {
@@ -89,6 +128,8 @@ export function startProxy(config: Config, routes: RouteStore) {
     log.info("proxy listening", {
       port: config.port,
       routesFile: config.routesFile,
+      tenantBaseDomain: config.tenantBaseDomain,
+      tenantHostHeader: config.tenantHostHeader ?? "host",
     });
   });
 

@@ -66,7 +66,7 @@ Routing is driven by a JSON file (path from `ROUTES_FILE`, default `./routes.jso
 }
 ```
 
-- **`default`** (required) — route used for any chargeBoxId not listed under `chargers`.
+- **`default`** (required, unless the file defines [`tenants`](#multi-tenant-routing)) — route used for any chargeBoxId not listed under `chargers`.
 - **`chargers`** (optional) — exact-match overrides keyed by chargeBoxId.
 - Each route has a `primary` backend (required) and `secondaries` (array of backends, optional).
 - A backend is either a URL string or an object `{ "url": "...", "appendChargeBoxId": false }`. `appendChargeBoxId` defaults to `true`; a bare string is shorthand for `{ "url": "...", "appendChargeBoxId": true }`.
@@ -83,6 +83,74 @@ Routing is driven by a JSON file (path from `ROUTES_FILE`, default `./routes.jso
 
 The gateway watches the routes file and reloads it on change. Existing charger sessions keep the route they connected with; only new connections pick up the change. If a reload fails validation, the error is logged and the previous table stays in effect.
 
+## Multi-tenant routing
+
+One gateway can serve several **tenants**, each with its own routes. The tenant is resolved from the **hostname the charger dialled**, so two tenants may both have a charger called `CP-001` without any collision: sessions and routes are keyed by `(tenantId, chargeBoxId)`. Nothing in the OCPP frames is read or changed — the tenant is a transport/routing concept only.
+
+```
+wss://tenant-a.ocpp.example.com/CP-001  →  tenantId = tenant-a, chargeBoxId = CP-001  →  CSMS A
+wss://tenant-b.ocpp.example.com/CP-001  →  tenantId = tenant-b, chargeBoxId = CP-001  →  CSMS B
+```
+
+Add a `tenants` map to the routes file (see [`routes.multi-tenant.example.json`](routes.multi-tenant.example.json)):
+
+```json
+{
+  "default": { "primary": "wss://csms.example.com/ocpp" },
+  "tenants": {
+    "tenant-a": {
+      "default": { "primary": "wss://csms-a.example.com/ocpp" },
+      "chargers": { "CP-001": { "primary": "wss://csms-a.example.com/ocpp", "secondaries": ["wss://analytics.example.com/ocpp"] } }
+    },
+    "tenant-b": {
+      "hostnames": ["ocpp.customer-b.example"],
+      "chargers": { "CP-001": { "primary": "wss://csms-b.example.com/ocpp" } }
+    }
+  }
+}
+```
+
+- A **tenant id** is a lowercase DNS label (`a-z`, `0-9`, `-`).
+- A tenant has its own `default` and/or `chargers` (at least one of them). A tenant **never falls back** to the global routes: a charger with no match in its tenant is rejected.
+- `hostnames` (optional) lists custom domains that select the tenant, e.g. `ocpp.customer-b.example`. A hostname may belong to one tenant only.
+- With `tenants`, the global `default` becomes optional.
+
+**Tenant resolution**, from the connection's hostname (lowercased, port and trailing dot ignored):
+
+1. a hostname listed in some tenant's `hostnames` → that tenant;
+2. otherwise, with `TENANT_BASE_DOMAIN=ocpp.example.com`, a hostname `<label>.ocpp.example.com` → tenant `<label>`. Only one label is accepted: `a.b.ocpp.example.com`, `ocpp.example.com` itself or look-alikes such as `evilocpp.example.com` resolve no tenant;
+3. otherwise → **no tenant**.
+
+| Outcome                                                         | Behaviour                                                       |
+| --------------------------------------------------------------- | --------------------------------------------------------------- |
+| Tenant resolved and known, route found                          | Connected to that tenant's primary/secondaries                  |
+| Tenant resolved but not in `tenants`, or no route in the tenant | WebSocket closed with **1008** (`No route for this charge point`) |
+| No tenant (IP address, unrelated or malformed host)             | Global `default`/`chargers`; closed with **1008** if there are none |
+| Host header missing or sent twice (or the trusted header, see below) | Closed with **1008**, never routed — not even to the global routes |
+
+**Backward compatibility:** without `TENANT_BASE_DOMAIN`, a routes file without `tenants` behaves exactly as before, whatever the `Host` header: every connection resolves no tenant and uses the global routes. Once `TENANT_BASE_DOMAIN` is set, a subdomain of it always names a tenant — an unknown one is rejected, never sent to the global routes — so add the `tenants` before setting it. Omit the global `default` to reject every connection that does not name a known tenant.
+
+### Running it locally
+
+```bash
+cp routes.multi-tenant.example.json routes.json   # edit with your CSMS URLs
+TENANT_BASE_DOMAIN=ocpp.example.com ROUTES_FILE=./routes.json npm start
+```
+
+Point `*.ocpp.example.com` at the gateway (DNS, or `/etc/hosts` entries such as `127.0.0.1 tenant-a.ocpp.example.com` for a quick test), then connect chargers to `ws://tenant-a.ocpp.example.com:9000/CP-001`.
+
+### Behind a reverse proxy: the trusted host header
+
+The gateway reads the hostname from the `Host` header by default. When a reverse proxy in front of it rewrites `Host` (as the Cloudflare Container runtime may), set `TENANT_HOST_HEADER` (e.g. `x-forwarded-host`) and have the proxy put the original hostname there.
+
+**Security:** never trust a tenant chosen by the charger. The hostname a charger dials is already under its control, which is fine: it only selects *which* tenant's CSMS will authenticate it (the gateway forwards `Authorization`, the CSMS validates it). But a header such as `X-OCPP-Tenant` or `X-Forwarded-Host` sent by a client must never be accepted blindly:
+
+- `X-Forwarded-Host` (or any other header) is **ignored** unless named by `TENANT_HOST_HEADER`;
+- once it is named, the gateway trusts it **instead of** `Host` (no fallback), so it must only be reachable through a proxy that **deletes any client-supplied value and sets its own**. That proxy is the trust boundary; never expose such a gateway directly;
+- **fail closed:** a request missing that header (e.g. one that bypassed the proxy) or carrying it — or `Host` — more than once is rejected with 1008 before any upstream is dialled, so the charger's `Authorization` is never forwarded, not even to the global routes.
+
+The [Cloudflare example](deploy/cloudflare/README.md) implements this boundary.
+
 ## Quick start
 
 ### Using Docker (recommended)
@@ -97,6 +165,10 @@ docker run -d \
   -v "$(pwd)/routes.json:/app/routes.json:ro" \
   ghcr.io/juherr/ocpp-gateway:1.0.0
 ```
+
+### On Cloudflare (Worker + Container)
+
+[`deploy/cloudflare/`](deploy/cloudflare/README.md) runs the same image in a Cloudflare Container behind a minimal Worker, with tenants resolved from `*.ocpp.example.com`.
 
 ### Using Docker Compose
 
@@ -131,6 +203,8 @@ All configuration is done through environment variables:
 | `ROUTES_FILE`                  | No       | `./routes.json` | Path to the JSON routing table                                                      |
 | `LOG_LEVEL`                    | No       | `info`          | `debug`, `info`, `warn`, or `error`                                                 |
 | `LOG_DEBUG_MESSAGE_MAX_LENGTH` | No       | `120`           | Max char length for debug payload summaries. Leave empty to disable truncation      |
+| `TENANT_BASE_DOMAIN`           | No       | —               | Tenants are subdomains of this domain (`acme.<domain>` → `acme`). See [Multi-tenant routing](#multi-tenant-routing) |
+| `TENANT_HOST_HEADER`           | No       | — (`Host`)      | Header holding the dialled hostname, set by a **trusted** reverse proxy (e.g. `x-forwarded-host`) |
 
 ## Charger setup
 
@@ -165,11 +239,11 @@ The gateway negotiates OCPP sub-protocols (`ocpp1.6`, `ocpp2.0`, `ocpp2.0.1`) wi
 
 ## Logging
 
-Logs are structured JSON written to stdout/stderr. Each charger session logs under a tag equal to its chargeBoxId, and the resolved route (primary + secondaries) is logged on connect:
+Logs are structured JSON written to stdout/stderr. Each charger session logs under a tag equal to its chargeBoxId (`<tenantId>/<chargeBoxId>` for a tenant), and the resolved tenant and route (primary + secondaries) are logged on connect:
 
 ```json lines
-{"time":"2026-06-17T10:00:00.000Z","level":"info","tag":"proxy","msg":"proxy listening","port":9000,"routesFile":"./routes.json"}
-{"time":"2026-06-17T10:00:01.000Z","level":"info","tag":"proxy","msg":"charger connected","chargePointId":"CP-001","protocol":"ocpp1.6","primary":"wss://primary-csms.example.com/ocpp","secondaries":["wss://analytics.example.com/ocpp"]}
+{"time":"2026-06-17T10:00:00.000Z","level":"info","tag":"proxy","msg":"proxy listening","port":9000,"routesFile":"./routes.json","tenantHostHeader":"host"}
+{"time":"2026-06-17T10:00:01.000Z","level":"info","tag":"proxy","msg":"charger connected","tenantId":null,"chargePointId":"CP-001","protocol":"ocpp1.6","primary":"wss://primary-csms.example.com/ocpp","secondaries":["wss://analytics.example.com/ocpp"]}
 {"time":"2026-06-17T10:00:01.500Z","level":"debug","tag":"CP-001","msg":"charger → proxy","message":"[OCPP CALL] (abc123): [2, \"abc123\", \"BootNotification\", {\"chargePointVendor\":\"Acme\"}]"}
 ```
 
@@ -190,7 +264,7 @@ npm test           # run unit + integration tests (Vitest)
 npm run dev        # watch-bundle and run
 ```
 
-Tests cover route resolution (`chargers[id]` vs `default`, target-URL construction) and an end-to-end integration scenario with mock primary/secondary CSMS servers verifying that the primary is bidirectional, secondary responses never reach the charger, and `Authorization` + sub-protocol are propagated.
+Tests cover route resolution (`chargers[id]` vs `default`, per-tenant routes, target-URL construction), tenant resolution from the hostname, session isolation per `(tenantId, chargeBoxId)`, the Cloudflare Worker header boundary (`deploy/cloudflare/test/`), and end-to-end integration scenarios with mock primary/secondary CSMS servers verifying that the primary is bidirectional, secondary responses never reach the charger, and `Authorization` + sub-protocol are propagated.
 
 ### Commits & Git hooks
 
