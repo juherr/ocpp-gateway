@@ -46,8 +46,9 @@ export class SessionRegistry<T extends { teardown(): void }> {
 
     let replaced = 0;
     let kept = 0;
-    // Copy first: teardown() ends the session, which calls remove() on this map.
-    for (const [session, sessionAuth] of [...entries]) {
+    // teardown() ends the session, which calls remove() on this map: deleting
+    // the current entry while iterating a Map is well-defined (no copy needed).
+    for (const [session, sessionAuth] of entries) {
       if (sameCredentials(sessionAuth, authHeader)) {
         session.teardown();
         replaced += 1;
