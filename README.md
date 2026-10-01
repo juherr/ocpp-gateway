@@ -66,7 +66,7 @@ Routing is driven by a JSON file (path from `ROUTES_FILE`, default `./routes.jso
 }
 ```
 
-- **`default`** (required) — route used for any chargeBoxId not listed under `chargers`.
+- **`default`** (required, unless the file defines [`tenants`](#multi-tenant-routing)) — route used for any chargeBoxId not listed under `chargers`.
 - **`chargers`** (optional) — exact-match overrides keyed by chargeBoxId.
 - Each route has a `primary` backend (required) and `secondaries` (array of backends, optional).
 - A backend is either a URL string or an object `{ "url": "...", "appendChargeBoxId": false }`. `appendChargeBoxId` defaults to `true`; a bare string is shorthand for `{ "url": "...", "appendChargeBoxId": true }`.
