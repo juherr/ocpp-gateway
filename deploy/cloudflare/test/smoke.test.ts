@@ -16,6 +16,7 @@ import {
 
 const WS_URL = process.env.SMOKE_GATEWAY_URL?.replace(/^http/, "ws");
 // Optional: a real CSMS (e.g. a test SteVe) routed from ROUTES_JSON in .dev.vars.
+// Without SMOKE_REAL_AUTHORIZATION the charger sends no Authorization header.
 const REAL_TENANT = process.env.SMOKE_REAL_TENANT;
 const REAL_CHARGE_BOX_ID = process.env.SMOKE_REAL_CHARGE_BOX_ID;
 const REAL_AUTH = process.env.SMOKE_REAL_AUTHORIZATION;
@@ -40,16 +41,24 @@ let sockets: WebSocket[] = [];
 const upstreams = (csms: Csms, id: string) =>
   csms.connections().filter((c) => c.path?.endsWith(`/${id}`));
 
-const headers = (tenant: string) => ({ host: `${tenant}.${BASE_DOMAIN}`, Authorization: AUTH });
+/** Handshake headers for `<tenant>.<base>`; `authorization: null` sends none. */
+const headers = (tenant: string, authorization: string | null = AUTH) => ({
+  host: `${tenant}.${BASE_DOMAIN}`,
+  ...(authorization === null ? {} : { Authorization: authorization }),
+});
 
 /** Open a charger connection through the Worker as if it dialled `<tenant>.<base>`. */
 async function charger(
   tenant: string,
   id: string,
-  options: { protocol?: string; headers?: Record<string, string> } = {},
+  options: {
+    protocol?: string;
+    authorization?: string | null;
+    headers?: Record<string, string>;
+  } = {},
 ) {
   const ws = await connectWhenOpen(`${WS_URL}/${id}`, options.protocol ?? "ocpp1.6", OPEN_TIMEOUT, {
-    ...headers(tenant),
+    ...headers(tenant, options.authorization),
     ...options.headers,
   });
   sockets.push(ws);
@@ -108,6 +117,14 @@ describe.skipIf(!WS_URL)("live smoke: Worker → Container → CSMS", { timeout:
     },
   );
 
+  it("sends no Authorization upstream when the charger sends none", async () => {
+    const id = "CP-NOAUTH";
+    await charger("tenant-a", id, { authorization: null });
+
+    await upstreamOpen(csmsA, id);
+    expect(upstreams(csmsA, id)[0].auth).toBeUndefined();
+  });
+
   it("rejects an unknown tenant with 1008 without dialling any CSMS", async () => {
     const id = "CP-UNKNOWN";
     // Not via charger(): the gateway may close the socket before it is open.
@@ -163,13 +180,12 @@ describe.skipIf(!WS_URL)("live smoke: Worker → Container → CSMS", { timeout:
     const second = await charger("tenant-a", id);
 
     expect((await closed).code).toBe(1000);
-    // The stale upstream link closes with the old session: wait for the new one.
-    await waitFor(
-      () =>
-        upstreams(csmsA, id).filter((c) => c.ws.readyState === WebSocket.OPEN).length === 1 &&
-        upstreams(csmsA, id).length === 2,
-      STEP_TIMEOUT,
-    );
+    // The old session's upstream link is fully closed, and the new one is open.
+    await waitFor(() => {
+      const [stale, fresh] = upstreams(csmsA, id);
+      return stale?.ws.readyState === WebSocket.CLOSED && fresh?.ws.readyState === WebSocket.OPEN;
+    }, STEP_TIMEOUT);
+    expect(upstreams(csmsA, id)).toHaveLength(2);
     second.ws.send(boot("boot-2"));
     await waitFor(() => second.received.includes(reply("csms-a")), STEP_TIMEOUT);
   });
@@ -178,7 +194,7 @@ describe.skipIf(!WS_URL)("live smoke: Worker → Container → CSMS", { timeout:
     "boots against the real CSMS of SMOKE_REAL_TENANT",
     async () => {
       const { ws, received } = await charger(REAL_TENANT!, REAL_CHARGE_BOX_ID!, {
-        headers: REAL_AUTH ? { Authorization: REAL_AUTH } : {},
+        authorization: REAL_AUTH ?? null,
       });
       expect(ws.protocol).toBe("ocpp1.6");
 
