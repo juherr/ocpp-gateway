@@ -4,3 +4,4 @@ dist/
 routes.json
 *.log
 .DS_Store
+.claude.local.md
