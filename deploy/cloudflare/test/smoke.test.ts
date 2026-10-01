@@ -67,10 +67,7 @@ async function charger(
   return { ws, received };
 }
 
-/**
- * Wait until the gateway's link to `csms` for `id` is open: the gateway does not
- * buffer the primary path, so a message sent before then is dropped.
- */
+/** Wait until the gateway's link to `csms` for `id` is open. */
 const upstreamOpen = (csms: Csms, id: string) =>
   waitFor(() => upstreams(csms, id).some((c) => c.ws.readyState === WebSocket.OPEN), STEP_TIMEOUT);
 
@@ -101,13 +98,13 @@ describe.skipIf(!WS_URL)("live smoke: Worker → Container → CSMS", { timeout:
       const { ws, received } = await charger("tenant-a", id, { protocol });
       expect(ws.protocol).toBe(protocol);
 
-      await upstreamOpen(csmsA, id);
-      const [upstream] = upstreams(csmsA, id);
-      expect(upstream).toMatchObject({ path: `/csms-a/${id}`, protocol, auth: AUTH });
-
-      // Charger → CSMS, and the CSMS reply back.
+      // Charger → CSMS, and the CSMS reply back; sent at once, before the
+      // gateway's link to the CSMS is open.
       ws.send(boot("boot-1"));
       await waitFor(() => received.includes(reply("csms-a")), STEP_TIMEOUT);
+
+      const [upstream] = upstreams(csmsA, id);
+      expect(upstream).toMatchObject({ path: `/csms-a/${id}`, protocol, auth: AUTH });
 
       // CSMS → charger (a CALL initiated by the CSMS), and the charger's result back.
       upstream.ws.send(JSON.stringify([2, "csms-1", "TriggerMessage", {}]));
@@ -157,8 +154,6 @@ describe.skipIf(!WS_URL)("live smoke: Worker → Container → CSMS", { timeout:
     const a = await charger("tenant-a", id);
     const b = await charger("tenant-b", id);
 
-    await upstreamOpen(csmsA, id);
-    await upstreamOpen(csmsB, id);
     a.ws.send(boot("boot-a"));
     b.ws.send(boot("boot-b"));
     await waitFor(() => a.received.length > 0 && b.received.length > 0, STEP_TIMEOUT);
@@ -198,16 +193,12 @@ describe.skipIf(!WS_URL)("live smoke: Worker → Container → CSMS", { timeout:
       });
       expect(ws.protocol).toBe("ocpp1.6");
 
-      // The real CSMS link cannot be observed from here and the primary path is
-      // not buffered, so retry like a charger would.
+      // A single boot, sent before the gateway's link to the real CSMS is open:
+      // a remote dial can take seconds, up to the gateway's 10 s handshake timeout.
       const result = () =>
-        received
-          .map((m) => JSON.parse(m))
-          .find(([type, id]) => type === 3 && id.startsWith("boot-"));
-      for (let attempt = 1; !result() && attempt <= 5; attempt++) {
-        ws.send(boot(`boot-${attempt}`));
-        await waitFor(() => result() !== undefined, 2000).catch(() => undefined);
-      }
+        received.map((m) => JSON.parse(m)).find(([type, id]) => type === 3 && id === "boot-1");
+      ws.send(boot("boot-1"));
+      await waitFor(() => result() !== undefined, 15_000);
       expect(result()?.[2].status).toBe("Accepted");
     },
   );
