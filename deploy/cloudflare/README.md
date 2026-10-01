@@ -90,7 +90,7 @@ From inside the local container, a CSMS running on your machine is reachable at 
 
 ### Smoke test
 
-`test/smoke.test.ts` drives the running Worker + Container end to end against mock CSMS on this machine (ports 9100–9102, the ones `.dev.vars.example` routes to): OCPP 1.6 and 2.0.1 both ways with the subprotocol and `Authorization` preserved, an unknown tenant closed with 1008 without dialling any CSMS, forged `x-forwarded-host` / `cf-container-target-port` ignored, the same chargeBoxId in two tenants, and a reconnect replacing the stale session. It is skipped unless `SMOKE_GATEWAY_URL` is set:
+`test/smoke.test.ts` drives the running Worker + Container end to end against mock CSMS on this machine (ports 9100–9102, the ones `.dev.vars.example` routes to). It is skipped unless `SMOKE_GATEWAY_URL` is set:
 
 ```bash
 # from the repository root, with `npm run dev` running

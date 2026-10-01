@@ -128,7 +128,7 @@ Add a `tenants` map to the routes file (see [`routes.multi-tenant.example.json`]
 | No tenant (IP address, unrelated or malformed host)             | Global `default`/`chargers`; closed with **1008** if there are none |
 | Host header missing or sent twice (or the trusted header, see below) | Closed with **1008**, never routed — not even to the global routes |
 
-**Backward compatibility:** without `TENANT_BASE_DOMAIN`, a routes file without `tenants` behaves exactly as before, whatever the `Host` header: every connection resolves no tenant and uses the global routes. Once `TENANT_BASE_DOMAIN` is set, a subdomain of it always names a tenant — an unknown one is rejected, never sent to the global routes — so add the `tenants` before setting it. Omit the global `default` to reject every connection that does not name a known tenant.
+**Backward compatibility:** without `TENANT_BASE_DOMAIN`, a routes file without `tenants` behaves exactly as before, whatever the `Host` header: every connection resolves no tenant and uses the global routes. Once `TENANT_BASE_DOMAIN` is set, a one-label subdomain of it always names a tenant — an unknown one is rejected, never sent to the global routes — so add the `tenants` before setting it. Nested names (`a.b.ocpp.example.com`) name no tenant and use the global routes. Omit the global `default` to reject every connection that does not name a known tenant.
 
 ### Running it locally
 
