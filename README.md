@@ -73,7 +73,7 @@ Routing is driven by a JSON file (path from `ROUTES_FILE`, default `./routes.jso
 
 **Resolution:** for a charger with id `X`, the gateway uses `chargers["X"]` if present, otherwise `default`.
 
-**Target URL:** for every upstream (primary and each secondary), the gateway appends the url-encoded chargeBoxId as a path segment: `<baseUrl>/<chargeBoxId>` (query parameters are kept). Different backends may therefore use entirely different base paths. For CSMS endpoints that use a fixed URL per charger, set `appendChargeBoxId: false` and the URL is used as-is. In the example above:
+**Target URL:** for every upstream (primary and each secondary), the gateway appends the url-encoded chargeBoxId as a path segment: `<baseUrl>/<chargeBoxId>` (query parameters are kept). Different backends may therefore use entirely different base paths. For CSMS endpoints that use a fixed URL per charger, set `appendChargeBoxId: false` and the URL is used as-is. Credentials in a backend URL (userinfo, query parameter values, fragment) are masked wherever the URL is logged. In the example above:
 
 - `CP-001` → primary `wss://primary-csms.example.com/ocpp/CP-001`, secondary `wss://analytics.example.com/ocpp/CP-001`
 - `CP-002` → primary `wss://fixed-csms.example.com/XXXXXXXX` (unchanged), no secondary

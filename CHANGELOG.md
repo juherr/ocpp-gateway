@@ -103,6 +103,13 @@ global primary/secondary configuration. Nothing has been released yet.
 - Failed sends to a secondary are now logged as warnings instead of being
   silently ignored (from upstream).
 
+### Security
+
+- Backend URLs are redacted wherever the gateway logs them or echoes them in a
+  routes file error: userinfo, query parameter values and the fragment are
+  masked, so credentials in a CSMS URL never reach the logs (now collected by
+  Cloudflare observability in the Cloudflare example).
+
 ### Preserved
 
 - OCPP 1.6 / 2.0.1 sub-protocol negotiation, with the negotiated sub-protocol
