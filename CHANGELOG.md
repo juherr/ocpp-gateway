@@ -14,6 +14,17 @@ global primary/secondary configuration. Nothing has been released yet.
 
 ### Added
 
+- Multi-tenant routing: an optional `tenants` map in the routes file gives each
+  tenant its own `default`/`chargers` routes. The tenant is resolved from the
+  hostname the charger dialled — a subdomain of `TENANT_BASE_DOMAIN`
+  (`acme.ocpp.example.com` → `acme`) or an explicit per-tenant `hostnames`
+  entry (custom domains). Sessions are keyed by `(tenantId, chargeBoxId)`, so
+  two tenants can each have a `CP-001`. A tenant never falls back to the global
+  routes; unknown tenants and unmatched chargers are closed with `1008`. Without
+  `TENANT_BASE_DOMAIN`, routes files without `tenants` behave as before.
+- `TENANT_HOST_HEADER` to read the dialled hostname from a header set by a
+  trusted reverse proxy (e.g. `x-forwarded-host`) instead of `Host`; any other
+  forwarded-host header is ignored.
 - Per-chargeBoxId routing table loaded from a JSON file (`ROUTES_FILE`, default
   `./routes.json`): a required `default` route and optional exact-match
   `chargers` overrides, each with one `primary` and any number of read-only

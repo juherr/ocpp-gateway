@@ -1,6 +1,7 @@
 import WebSocket from "ws";
 import { createLogger } from "./logger";
 import { type Route, buildTargetUrl } from "./routes";
+import { type SessionKey, formatSessionKey } from "./sessions";
 import { OCPP_SUBPROTOCOLS } from "./types";
 import { forwardPing, forwardPong, rawDataToString } from "./utils/websocket";
 
@@ -41,13 +42,14 @@ export class ChargerConnection {
 
   constructor(
     private readonly charger: WebSocket,
-    private readonly chargePointId: string,
+    private readonly key: SessionKey,
     private readonly route: Route,
     private readonly protocol: string,
     private readonly authHeader: string | undefined,
     private readonly onEnd: () => void,
   ) {
-    this.log = createLogger(chargePointId);
+    // Tag logs with the tenant too: two tenants may share a chargeBoxId.
+    this.log = createLogger(formatSessionKey(key));
     this.setup();
   }
 
@@ -55,7 +57,7 @@ export class ChargerConnection {
     // `new WebSocket()` throws synchronously on URLs it refuses to dial (bad
     // scheme, fragment, …). Never let that escape into the server's connection
     // handler: it would crash the gateway for every charger.
-    const primaryUrl = buildTargetUrl(this.route.primary, this.chargePointId);
+    const primaryUrl = buildTargetUrl(this.route.primary, this.key.chargeBoxId);
     try {
       this.primary = this.connectPrimary(primaryUrl);
     } catch (err) {
@@ -70,7 +72,7 @@ export class ChargerConnection {
 
     for (const backend of this.route.secondaries) {
       const state: SecondaryState = {
-        url: buildTargetUrl(backend, this.chargePointId),
+        url: buildTargetUrl(backend, this.key.chargeBoxId),
         ws: null,
         queue: [],
         keepalive: null,

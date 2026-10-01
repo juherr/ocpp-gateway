@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
-import { sleep, startGateway as startTestGateway } from "./helpers";
+import { connectWhenOpen, sleep, startGateway as startTestGateway, waitForClose } from "./helpers";
 
 interface WsRecord {
   httpServer: ReturnType<typeof createServer>;
@@ -12,57 +12,6 @@ interface WsRecord {
 interface UrlAwareConnection {
   socket: WebSocket;
   url: string;
-}
-
-function waitForOpen(socket: WebSocket, timeoutMs = 2000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error("websocket timeout"));
-    }, timeoutMs);
-    socket.once("open", () => {
-      clearTimeout(timeout);
-      resolve();
-    });
-    socket.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error instanceof Error ? error : new Error(String(error)));
-    });
-  });
-}
-
-function waitForClose(
-  socket: WebSocket,
-  timeoutMs = 2000,
-): Promise<{ code: number; reason: Buffer }> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error("websocket close timeout"));
-    }, timeoutMs);
-    const onError = (error: Error) => {
-      clearTimeout(timeout);
-      socket.off("close", onClose);
-      reject(error);
-    };
-    const onClose = (code: number, reason: Buffer) => {
-      clearTimeout(timeout);
-      socket.off("error", onError);
-      resolve({ code, reason: Buffer.from(reason) });
-    };
-    socket.once("close", onClose);
-    socket.once("error", onError);
-  });
-}
-
-/** Open a charger socket; callers start the gateway (and await "listening") first. */
-async function connectWhenOpen(
-  url: string,
-  protocol: string,
-  timeoutMs = 3000,
-  headers: Record<string, string> = {},
-): Promise<WebSocket> {
-  const socket = new WebSocket(url, protocol, { headers });
-  await waitForOpen(socket, timeoutMs);
-  return socket;
 }
 
 function createWsServer(): WsRecord {

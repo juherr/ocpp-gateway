@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { type FSWatcher, watch } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { createLogger } from "./logger";
+import { type TenantId, isTenantId, parseHostname } from "./tenants";
 
 const log = createLogger("routes");
 
@@ -26,13 +27,24 @@ export interface Route {
 }
 
 /**
- * The full routing table: a mandatory `default` route plus an optional
- * per-chargeBoxId override map. Resolution is exact-match on the id, falling
- * back to `default`.
+ * One routing scope: an optional `default` route plus exact-match overrides
+ * keyed by chargeBoxId. Maps, so no id can collide with `Object.prototype`.
  */
-export interface RouteTable {
-  default: Route;
-  chargers: Record<string, Route>;
+export interface RouteScope {
+  default?: Route;
+  chargers: Map<string, Route>;
+}
+
+/**
+ * The full routing table. Its own `default`/`chargers` form the global scope,
+ * serving connections that resolve no tenant (the single-tenant setup);
+ * `tenants` holds one scope per tenant, and `hostnames` maps each explicit
+ * hostname (custom domain) to the tenant that claims it. Resolution never
+ * falls back from one scope to another.
+ */
+export interface RouteTable extends RouteScope {
+  tenants: Map<TenantId, RouteScope>;
+  hostnames: Map<string, TenantId>;
 }
 
 const DIALABLE_PROTOCOLS = new Set(["ws:", "wss:", "http:", "https:"]);
@@ -52,41 +64,43 @@ function parseUrl(value: unknown, where: string): string {
   return value;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** Accept either a bare URL string or `{ url, appendChargeBoxId? }`. */
 function parseBackend(value: unknown, where: string): Backend {
   if (typeof value === "string") {
     return { url: parseUrl(value, where), appendChargeBoxId: true };
   }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (!isPlainObject(value)) {
     throw new Error(`${where} must be a URL string or an object with a "url"`);
   }
-  const obj = value as Record<string, unknown>;
 
-  const append = obj.appendChargeBoxId ?? true;
+  const append = value.appendChargeBoxId ?? true;
   if (typeof append !== "boolean") {
     throw new Error(`${where} "appendChargeBoxId" must be a boolean`);
   }
 
-  return { url: parseUrl(obj.url, where), appendChargeBoxId: append };
+  return { url: parseUrl(value.url, where), appendChargeBoxId: append };
 }
 
 function parseRoute(value: unknown, where: string): Route {
-  if (typeof value !== "object" || value === null) {
+  if (!isPlainObject(value)) {
     throw new Error(`route "${where}" must be an object`);
   }
-  const obj = value as Record<string, unknown>;
 
-  if (obj.primary === undefined) {
+  if (value.primary === undefined) {
     throw new Error(`route "${where}" must define a "primary"`);
   }
-  const primary = parseBackend(obj.primary, `route "${where}" primary`);
+  const primary = parseBackend(value.primary, `route "${where}" primary`);
 
   let secondaries: Backend[] = [];
-  if (obj.secondaries !== undefined) {
-    if (!Array.isArray(obj.secondaries)) {
+  if (value.secondaries !== undefined) {
+    if (!Array.isArray(value.secondaries)) {
       throw new Error(`route "${where}" "secondaries" must be an array`);
     }
-    secondaries = obj.secondaries.map((s, i) =>
+    secondaries = value.secondaries.map((s, i) =>
       parseBackend(s, `route "${where}" secondary #${i}`),
     );
   }
@@ -94,40 +108,103 @@ function parseRoute(value: unknown, where: string): Route {
   return { primary, secondaries };
 }
 
+/** Parse the `default` and `chargers` of a scope found at `path` ("" for the root). */
+function parseScope(value: Record<string, unknown>, path: string): RouteScope {
+  const chargersPath = `${path}chargers`;
+  const scope: RouteScope = { chargers: new Map() };
+  if (value.chargers !== undefined) {
+    if (!isPlainObject(value.chargers)) {
+      throw new Error(`"${chargersPath}" must be an object keyed by chargeBoxId`);
+    }
+    for (const [id, route] of Object.entries(value.chargers)) {
+      scope.chargers.set(id, parseRoute(route, `${chargersPath}.${id}`));
+    }
+  }
+  if (value.default !== undefined) {
+    scope.default = parseRoute(value.default, `${path}default`);
+  }
+  return scope;
+}
+
+function parseHostnames(value: unknown, tenantId: string): string[] {
+  if (value === undefined) return [];
+  const where = `tenant "${tenantId}" "hostnames"`;
+  if (!Array.isArray(value)) {
+    throw new Error(`${where} must be an array of hostnames`);
+  }
+  return value.map((entry) => {
+    const hostname = typeof entry === "string" ? parseHostname(entry) : null;
+    if (hostname === null) {
+      throw new Error(`${where} entry ${JSON.stringify(entry)} is not a valid hostname`);
+    }
+    return hostname;
+  });
+}
+
+function parseTenants(value: unknown, table: RouteTable): void {
+  if (value === undefined) return;
+  if (!isPlainObject(value)) {
+    throw new Error('"tenants" must be an object keyed by tenant id');
+  }
+
+  for (const [tenantId, tenant] of Object.entries(value)) {
+    if (!isTenantId(tenantId)) {
+      throw new Error(
+        `tenant id ${JSON.stringify(tenantId)} must be a lowercase DNS label (a-z, 0-9, "-")`,
+      );
+    }
+    if (!isPlainObject(tenant)) {
+      throw new Error(`tenant "${tenantId}" must be an object`);
+    }
+    const scope = parseScope(tenant, `tenants.${tenantId}.`);
+    if (!scope.default && scope.chargers.size === 0) {
+      throw new Error(`tenant "${tenantId}" must define a "default" route or at least one charger`);
+    }
+    table.tenants.set(tenantId, scope);
+
+    for (const hostname of parseHostnames(tenant.hostnames, tenantId)) {
+      const owner = table.hostnames.get(hostname);
+      if (owner !== undefined && owner !== tenantId) {
+        throw new Error(
+          `hostname "${hostname}" is claimed by tenants "${owner}" and "${tenantId}"`,
+        );
+      }
+      table.hostnames.set(hostname, tenantId);
+    }
+  }
+}
+
 /**
  * Validate and normalise an arbitrary parsed-JSON value into a RouteTable.
  * Throws with a descriptive message on any structural problem (fail-fast).
  */
 export function parseRouteTable(value: unknown): RouteTable {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (!isPlainObject(value)) {
     throw new Error("routes file must be a JSON object");
   }
-  const obj = value as Record<string, unknown>;
 
-  if (obj.default === undefined) {
-    throw new Error('routes file must define a "default" route');
+  const table: RouteTable = { ...parseScope(value, ""), tenants: new Map(), hostnames: new Map() };
+  parseTenants(value.tenants, table);
+  if (!table.default && table.tenants.size === 0) {
+    throw new Error('routes file must define a "default" route or at least one tenant');
   }
-  const def = parseRoute(obj.default, "default");
-
-  const chargers: Record<string, Route> = {};
-  if (obj.chargers !== undefined) {
-    if (typeof obj.chargers !== "object" || obj.chargers === null || Array.isArray(obj.chargers)) {
-      throw new Error('"chargers" must be an object keyed by chargeBoxId');
-    }
-    for (const [id, route] of Object.entries(obj.chargers as Record<string, unknown>)) {
-      chargers[id] = parseRoute(route, `chargers.${id}`);
-    }
-  }
-
-  return { default: def, chargers };
+  return table;
 }
 
 /**
- * Resolve the route for a chargeBoxId: an exact match in `chargers` wins,
- * otherwise the `default` route is returned.
+ * Resolve the route for a charger. Without a tenant (`null`), the global
+ * scope applies; with one, only that tenant's scope does. In both, an exact
+ * match in `chargers` wins, otherwise the scope's `default` is used.
+ * Returns `null` when the tenant is unknown or the scope has no match.
  */
-export function resolveRoute(table: RouteTable, chargeBoxId: string): Route {
-  return table.chargers[chargeBoxId] ?? table.default;
+export function resolveRoute(
+  table: RouteTable,
+  tenantId: TenantId | null,
+  chargeBoxId: string,
+): Route | null {
+  const scope = tenantId === null ? table : table.tenants.get(tenantId);
+  if (!scope) return null;
+  return scope.chargers.get(chargeBoxId) ?? scope.default ?? null;
 }
 
 /**
@@ -188,8 +265,13 @@ export class RouteStore {
     return new RouteStore(absolute, loadRouteTable(absolute));
   }
 
-  resolve(chargeBoxId: string): Route {
-    return resolveRoute(this.table, chargeBoxId);
+  resolve(tenantId: TenantId | null, chargeBoxId: string): Route | null {
+    return resolveRoute(this.table, tenantId, chargeBoxId);
+  }
+
+  /** The tenant that explicitly claims `hostname` (a custom domain), if any. */
+  findTenantByHostname(hostname: string): TenantId | null {
+    return this.table.hostnames.get(hostname) ?? null;
   }
 
   /** Re-read the routes file; keep the current table if the new one is invalid. */
@@ -198,7 +280,8 @@ export class RouteStore {
       this.table = loadRouteTable(this.path);
       log.info("routes reloaded", {
         path: this.path,
-        chargers: Object.keys(this.table.chargers).length,
+        chargers: this.table.chargers.size,
+        tenants: this.table.tenants.size,
       });
     } catch (err) {
       log.error("routes reload failed, keeping previous table", {

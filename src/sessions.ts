@@ -1,7 +1,27 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import type { TenantId } from "./tenants";
 
 /**
- * Tracks the live charger sessions per chargeBoxId so a reconnecting charger
+ * Identifies a charger session. The same chargeBoxId may live in several
+ * tenants (and in the tenant-less global scope) without colliding.
+ */
+export interface SessionKey {
+  tenantId: TenantId | null;
+  chargeBoxId: string;
+}
+
+/** Collision-free string form of a key: a chargeBoxId may contain any character. */
+function canonical(key: SessionKey): string {
+  return JSON.stringify([key.tenantId, key.chargeBoxId]);
+}
+
+/** Human-readable form of a key, for logs: `CP-001` or `acme/CP-001`. */
+export function formatSessionKey(key: SessionKey): string {
+  return key.tenantId === null ? key.chargeBoxId : `${key.tenantId}/${key.chargeBoxId}`;
+}
+
+/**
+ * Tracks the live charger sessions per (tenant, chargeBoxId) so a reconnecting charger
  * can replace its own stale session (some CSMS reject a second connection for
  * the same id while the old one is still open).
  *
@@ -12,16 +32,16 @@ import { createHash, timingSafeEqual } from "node:crypto";
  * mismatched newcomer runs alongside the existing session, and the CSMS decides.
  */
 export class SessionRegistry<T extends { teardown(): void }> {
-  /** chargeBoxId → (live session → the Authorization header it was opened with). */
+  /** canonical key → (live session → the Authorization header it was opened with). */
   private readonly sessions = new Map<string, Map<T, string | undefined>>();
 
   /**
-   * Tear down the live sessions for `id` that were opened with the same
+   * Tear down the live sessions for `key` that were opened with the same
    * credentials. Returns how many were replaced and how many were kept
    * because their credentials differ.
    */
-  evict(id: string, authHeader: string | undefined): { replaced: number; kept: number } {
-    const entries = this.sessions.get(id);
+  evict(key: SessionKey, authHeader: string | undefined): { replaced: number; kept: number } {
+    const entries = this.sessions.get(canonical(key));
     if (!entries) return { replaced: 0, kept: 0 };
 
     let replaced = 0;
@@ -38,7 +58,8 @@ export class SessionRegistry<T extends { teardown(): void }> {
     return { replaced, kept };
   }
 
-  add(id: string, authHeader: string | undefined, session: T): void {
+  add(key: SessionKey, authHeader: string | undefined, session: T): void {
+    const id = canonical(key);
     let entries = this.sessions.get(id);
     if (!entries) {
       entries = new Map();
@@ -47,7 +68,8 @@ export class SessionRegistry<T extends { teardown(): void }> {
     entries.set(session, authHeader);
   }
 
-  remove(id: string, session: T): void {
+  remove(key: SessionKey, session: T): void {
+    const id = canonical(key);
     const entries = this.sessions.get(id);
     if (!entries) return;
     entries.delete(session);
