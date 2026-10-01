@@ -60,9 +60,20 @@ export function startProxy(
       return;
     }
 
-    // A missing or duplicated host header resolves no tenant (global routes).
-    const host = readSingleHeader(req.rawHeaders, config.tenantHostHeader ?? "host");
-    const tenantId = host === null ? null : tenants.resolve(host);
+    // Fail closed: a missing or duplicated host header (or trusted header) is
+    // ambiguous, so it must never fall back to the global routes.
+    const hostHeader = config.tenantHostHeader ?? "host";
+    const host = readSingleHeader(req.rawHeaders, hostHeader);
+    if (host === null) {
+      log.warn("rejected connection: missing or duplicated host header", {
+        header: hostHeader,
+        chargePointId,
+        ip: req.socket.remoteAddress,
+      });
+      ws.close(1008, "Missing or ambiguous host");
+      return;
+    }
+    const tenantId = tenants.resolve(host);
     const route = routes.resolve(tenantId, chargePointId);
     if (!route) {
       log.warn("rejected connection: no route", {

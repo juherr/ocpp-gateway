@@ -202,37 +202,111 @@ describe("multi-tenant rejection and fallback", () => {
 
     expect((await waitForClose(stranger.ws)).code).toBe(1008);
   });
+});
 
-  it("does not resolve a tenant from a request carrying two Host headers", async () => {
+/**
+ * Send a raw WebSocket upgrade (so headers can be omitted or duplicated, which
+ * the ws client cannot do) and resolve with the close code the gateway sends.
+ */
+async function rawUpgradeCloseCode(port: number, headerLines: string[]): Promise<number | null> {
+  const socket = connect(port, "127.0.0.1");
+  cleanup.push(() => socket.destroy());
+  await once(socket, "connect");
+  const chunks: Buffer[] = [];
+  socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+  socket.write(
+    [
+      "GET /CP-001 HTTP/1.1",
+      ...headerLines,
+      `Authorization: ${AUTH}`,
+      "Upgrade: websocket",
+      "Connection: Upgrade",
+      "Sec-WebSocket-Version: 13",
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+      "",
+      "",
+    ].join("\r\n"),
+  );
+  // Upgrade response, then a close frame: 0x88, payload length, 2-byte code.
+  const closeFrame = () => {
+    const data = Buffer.concat(chunks);
+    const end = data.indexOf("\r\n\r\n");
+    return end === -1 ? null : data.subarray(end + 4);
+  };
+  try {
+    await waitFor(() => (closeFrame()?.length ?? 0) >= 4, 1000);
+  } catch {
+    return null; // still open: the gateway accepted the connection
+  }
+  const frame = closeFrame()!;
+  expect(frame[0]).toBe(0x88);
+  return frame.readUInt16BE(2);
+}
+
+describe("ambiguous host header fails closed", () => {
+  // A global default is present in every case: an ambiguous host must be
+  // rejected, never routed (with the charger's Authorization) to the global CSMS.
+  async function setup(overrides: Partial<Config> = {}) {
     const csmsA = await csms("csms-a");
-    const gw = await gateway({
-      tenants: { "tenant-a": { default: { primary: csmsA.url() } } },
-    });
-
-    const socket = connect(gw.port, "127.0.0.1");
-    cleanup.push(() => socket.destroy());
-    await once(socket, "connect");
-    socket.write(
-      [
-        "GET /CP-001 HTTP/1.1",
-        "Host: tenant-a.ocpp.example.com",
-        "Host: tenant-a.ocpp.example.com",
-        "Upgrade: websocket",
-        "Connection: Upgrade",
-        "Sec-WebSocket-Version: 13",
-        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
-        "",
-        "",
-      ].join("\r\n"),
+    const globalCsms = await csms("global");
+    const gw = await gateway(
+      {
+        default: { primary: globalCsms.url() },
+        tenants: { "tenant-a": { default: { primary: csmsA.url() } } },
+      },
+      overrides,
     );
-    // Upgrade, then an immediate 1008 close frame (0x88, code 0x03F0).
-    const chunks: Buffer[] = [];
-    socket.on("data", (chunk: Buffer) => chunks.push(chunk));
-    await waitFor(() => Buffer.concat(chunks).includes(Buffer.from([0x88])));
-    const frame = Buffer.concat(chunks);
-    const close = frame.subarray(frame.indexOf(0x88));
-    expect(close.readUInt16BE(2)).toBe(1008);
-    expect(csmsA.connected()).toBe(false);
+    const reachedNoUpstream = async () => {
+      await sleep(100);
+      expect({ global: globalCsms.connected(), tenantA: csmsA.connected() }).toEqual({
+        global: false,
+        tenantA: false,
+      });
+    };
+    return { gw, reachedNoUpstream };
+  }
+
+  it("rejects a request carrying two Host headers", async () => {
+    const { gw, reachedNoUpstream } = await setup();
+
+    const code = await rawUpgradeCloseCode(gw.port, [
+      "Host: tenant-a.ocpp.example.com",
+      "Host: tenant-a.ocpp.example.com",
+    ]);
+
+    await reachedNoUpstream();
+    expect(code).toBe(1008);
+  });
+
+  it("rejects a request without a Host header", async () => {
+    const { gw, reachedNoUpstream } = await setup();
+
+    const code = await rawUpgradeCloseCode(gw.port, []);
+
+    await reachedNoUpstream();
+    expect(code).toBe(1008);
+  });
+
+  it("rejects a request missing the trusted host header", async () => {
+    const { gw, reachedNoUpstream } = await setup({ tenantHostHeader: "x-forwarded-host" });
+
+    const code = await rawUpgradeCloseCode(gw.port, ["Host: tenant-a.ocpp.example.com"]);
+
+    await reachedNoUpstream();
+    expect(code).toBe(1008);
+  });
+
+  it("rejects a request carrying the trusted host header twice", async () => {
+    const { gw, reachedNoUpstream } = await setup({ tenantHostHeader: "x-forwarded-host" });
+
+    const code = await rawUpgradeCloseCode(gw.port, [
+      "Host: container.internal",
+      "X-Forwarded-Host: tenant-a.ocpp.example.com",
+      "X-Forwarded-Host: tenant-a.ocpp.example.com",
+    ]);
+
+    await reachedNoUpstream();
+    expect(code).toBe(1008);
   });
 });
 
@@ -294,14 +368,5 @@ describe("trusted host header (reverse proxy boundary)", () => {
 
     await waitFor(() => csmsA.connected());
     expect(globalCsms.connected()).toBe(false);
-  });
-
-  it("does not fall back to Host when the trusted header is missing", async () => {
-    const { csmsA, globalCsms, gw } = await setupTrusted({ tenantHostHeader: "x-forwarded-host" });
-
-    await charger(gw.port, "tenant-a.ocpp.example.com");
-
-    await waitFor(() => globalCsms.connected());
-    expect(csmsA.connected()).toBe(false);
   });
 });

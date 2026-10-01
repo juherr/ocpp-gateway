@@ -125,7 +125,8 @@ Add a `tenants` map to the routes file (see [`routes.multi-tenant.example.json`]
 | --------------------------------------------------------------- | --------------------------------------------------------------- |
 | Tenant resolved and known, route found                          | Connected to that tenant's primary/secondaries                  |
 | Tenant resolved but not in `tenants`, or no route in the tenant | WebSocket closed with **1008** (`No route for this charge point`) |
-| No tenant (IP address, unrelated or malformed host, ambiguous)  | Global `default`/`chargers`; closed with **1008** if there are none |
+| No tenant (IP address, unrelated or malformed host)             | Global `default`/`chargers`; closed with **1008** if there are none |
+| Host header missing or sent twice (or the trusted header, see below) | Closed with **1008**, never routed — not even to the global routes |
 
 **Backward compatibility:** without `TENANT_BASE_DOMAIN`, a routes file without `tenants` behaves exactly as before, whatever the `Host` header: every connection resolves no tenant and uses the global routes. Once `TENANT_BASE_DOMAIN` is set, a subdomain of it always names a tenant — an unknown one is rejected, never sent to the global routes — so add the `tenants` before setting it. Omit the global `default` to reject every connection that does not name a known tenant.
 
@@ -146,7 +147,7 @@ The gateway reads the hostname from the `Host` header by default. When a reverse
 
 - `X-Forwarded-Host` (or any other header) is **ignored** unless named by `TENANT_HOST_HEADER`;
 - once it is named, the gateway trusts it **instead of** `Host` (no fallback), so it must only be reachable through a proxy that **deletes any client-supplied value and sets its own**. That proxy is the trust boundary; never expose such a gateway directly;
-- a request carrying the host header more than once resolves no tenant.
+- **fail closed:** a request missing that header (e.g. one that bypassed the proxy) or carrying it — or `Host` — more than once is rejected with 1008 before any upstream is dialled, so the charger's `Authorization` is never forwarded, not even to the global routes.
 
 The [Cloudflare example](deploy/cloudflare/README.md) implements this boundary.
 

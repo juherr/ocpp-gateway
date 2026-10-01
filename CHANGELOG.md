@@ -25,6 +25,10 @@ global primary/secondary configuration. Nothing has been released yet.
 - `TENANT_HOST_HEADER` to read the dialled hostname from a header set by a
   trusted reverse proxy (e.g. `x-forwarded-host`) instead of `Host`; any other
   forwarded-host header is ignored.
+- Connections whose host header (`Host`, or the trusted header) is missing or
+  sent more than once are closed with `1008` before any upstream is dialled
+  (fail closed): they never reach the global routes with the charger's
+  credentials.
 - Cloudflare deployment example (`deploy/cloudflare/`): a minimal Worker in
   front of a Cloudflare Container running the unchanged image, which strips
   client-supplied internal headers and injects the trusted hostname.

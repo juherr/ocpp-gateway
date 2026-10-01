@@ -90,7 +90,7 @@ From inside the local container, a CSMS running on your machine is reachable at 
 - the Worker also deletes `cf-container-target-port`, which the Container SDK would otherwise use to let a client pick any port inside the container;
 - the WebSocket handshake, the OCPP sub-protocol (`Sec-WebSocket-Protocol`) and `Authorization` pass through untouched; the CSMS still authenticates the charger.
 
-These rules are covered by `test/forward.test.ts` (header overwrite, stripping, pass-through). Never run the gateway with `TENANT_HOST_HEADER` set where clients can reach it directly.
+These rules are covered by `test/forward.test.ts` (header overwrite, stripping, pass-through). On the gateway side the boundary fails closed: a request without `x-forwarded-host` (one that did not come through the Worker) or with it twice is rejected with 1008 before any upstream is dialled. Still, never run the gateway with `TENANT_HOST_HEADER` set where clients can reach it directly.
 
 ## Design choices
 
