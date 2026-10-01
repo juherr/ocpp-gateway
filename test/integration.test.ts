@@ -1,17 +1,9 @@
 import { once } from "node:events";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
-import { setLogLevel } from "../src/logger";
-import { startProxy } from "../src/proxy";
-import { RouteStore } from "../src/routes";
 import { OCPP_SUBPROTOCOLS } from "../src/types";
-
-setLogLevel("error");
+import { sleep, startGateway } from "./helpers";
 
 /** A mock CSMS that records what it receives and replies with a tagged result. */
 function makeCsms(tag: string) {
@@ -19,6 +11,7 @@ function makeCsms(tag: string) {
   let connections = 0;
   let auth: string | undefined;
   let protocol: string | undefined;
+  let path: string | undefined;
 
   const wss = new WebSocketServer({
     port: 0,
@@ -32,6 +25,7 @@ function makeCsms(tag: string) {
     connections += 1;
     auth = req.headers.authorization;
     protocol = ws.protocol;
+    path = req.url;
     ws.on("message", (data) => {
       received.push(data.toString());
       ws.send(JSON.stringify([3, "reply", { from: tag }]));
@@ -44,18 +38,10 @@ function makeCsms(tag: string) {
     connected: () => connections > 0,
     auth: () => auth,
     protocol: () => protocol,
+    path: () => path,
     port: () => (wss.address() as AddressInfo).port,
     close: () => wss.close(),
   };
-}
-
-async function freePort(): Promise<number> {
-  const srv = createServer();
-  srv.listen(0);
-  await once(srv, "listening");
-  const port = (srv.address() as AddressInfo).port;
-  await new Promise<void>((r) => srv.close(() => r()));
-  return port;
 }
 
 async function waitFor(cond: () => boolean, timeout = 2000): Promise<void> {
@@ -65,8 +51,6 @@ async function waitFor(cond: () => boolean, timeout = 2000): Promise<void> {
     await new Promise((r) => setTimeout(r, 15));
   }
 }
-
-const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface Harness {
   proxyPort: number;
@@ -82,24 +66,16 @@ async function setup(
   const secondary = makeCsms("secondary");
   await Promise.all([once(primary.wss, "listening"), once(secondary.wss, "listening")]);
 
-  const dir = mkdtempSync(join(tmpdir(), "ocpp-routes-"));
-  const routesPath = join(dir, "routes.json");
-  writeFileSync(routesPath, JSON.stringify(routesFor(primary.port(), secondary.port())));
-
-  const store = RouteStore.load(routesPath);
-  const proxyPort = await freePort();
-  const server = startProxy({ port: proxyPort, routesFile: routesPath, logLevel: "error" }, store);
-  await once(server, "listening");
+  const gateway = await startGateway(routesFor(primary.port(), secondary.port()));
 
   return {
-    proxyPort,
+    proxyPort: gateway.port,
     primary,
     secondary,
     close: async () => {
-      store.close();
       primary.close();
       secondary.close();
-      await new Promise<void>((r) => server.close(() => r()));
+      await gateway.close();
     },
   };
 }
@@ -140,7 +116,7 @@ describe("OCPP proxy integration", () => {
     expect(fromClient.some((m) => m.includes('"from":"primary"'))).toBe(true);
 
     // (b) the secondary's reply must NEVER reach the charger
-    await delay(150);
+    await sleep(150);
     expect(fromClient.some((m) => m.includes('"from":"secondary"'))).toBe(false);
 
     // (c) Authorization and subprotocol propagated to BOTH upstreams
@@ -175,8 +151,27 @@ describe("OCPP proxy integration", () => {
     expect(h.primary.received()).toContain(boot);
 
     // default route has no secondaries → mirror CSMS gets nothing
-    await delay(150);
+    await sleep(150);
     expect(h.secondary.received()).toHaveLength(0);
+
+    client.close();
+    await h.close();
+  });
+
+  it("connects to a fixed endpoint URL when appendChargeBoxId is false", async () => {
+    const h = await setup((pp, sp) => ({
+      default: {
+        primary: { url: `ws://127.0.0.1:${pp}/fixed/XXXXXXXX`, appendChargeBoxId: false },
+        secondaries: [`ws://127.0.0.1:${sp}/ocpp`],
+      },
+    }));
+
+    const client = new WebSocket(`ws://127.0.0.1:${h.proxyPort}/CP-001`, ["ocpp1.6"]);
+    await once(client, "open");
+    await waitFor(() => h.primary.connected() && h.secondary.connected());
+
+    expect(h.primary.path()).toBe("/fixed/XXXXXXXX");
+    expect(h.secondary.path()).toBe("/ocpp/CP-001");
 
     client.close();
     await h.close();

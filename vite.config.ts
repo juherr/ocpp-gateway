@@ -14,6 +14,11 @@ export default defineConfig({
     // which made `vp fmt --check` flap between local and CI. Format code only.
     ignorePatterns: ["dist/**", "**/*.md"],
   },
+  test: {
+    include: ["test/**/*.test.ts"],
+    // Silence the logger for every test; logger tests install their own sink.
+    setupFiles: ["./test/setup.ts"],
+  },
   pack: {
     entry: ["src/index.ts"],
     format: ["cjs"],

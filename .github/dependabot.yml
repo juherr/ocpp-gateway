@@ -7,11 +7,20 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
+    ignore:
+      # @types/node tracks the Node major pinned in mise.toml.
+      - dependency-name: "@types/node"
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
 
   - package-ecosystem: docker
     directory: "/"

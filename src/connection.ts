@@ -1,7 +1,8 @@
 import WebSocket from "ws";
 import { createLogger } from "./logger";
 import { type Route, buildTargetUrl } from "./routes";
-import { OCPP_MSG_CALL, OCPP_SUBPROTOCOLS } from "./types";
+import { OCPP_SUBPROTOCOLS } from "./types";
+import { forwardPing, forwardPong, rawDataToString } from "./utils/websocket";
 
 /**
  * Manages the full lifecycle of a single charger connection:
@@ -17,24 +18,6 @@ import { OCPP_MSG_CALL, OCPP_SUBPROTOCOLS } from "./types";
  *   periodic keepalive pings, and buffer a small bounded queue of
  *   messages while reconnecting so brief blips don't lose data.
  */
-
-function forwardPing(ws: WebSocket | null, data: Buffer) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  try {
-    ws.ping(data);
-  } catch {
-    /* best-effort — peer may have just closed */
-  }
-}
-
-function forwardPong(ws: WebSocket | null, data: Buffer) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  try {
-    ws.pong(data);
-  } catch {
-    /* best-effort — peer may have just closed */
-  }
-}
 
 const SECONDARY_RECONNECT_DELAY_MS = 10_000;
 const SECONDARY_KEEPALIVE_INTERVAL_MS = 30_000;
@@ -62,30 +45,51 @@ export class ChargerConnection {
     private readonly route: Route,
     private readonly protocol: string,
     private readonly authHeader: string | undefined,
+    private readonly onEnd: () => void,
   ) {
     this.log = createLogger(chargePointId);
     this.setup();
   }
 
   private setup() {
-    this.primary = this.connectPrimary(this.route.primary);
+    // `new WebSocket()` throws synchronously on URLs it refuses to dial (bad
+    // scheme, fragment, …). Never let that escape into the server's connection
+    // handler: it would crash the gateway for every charger.
+    const primaryUrl = buildTargetUrl(this.route.primary, this.chargePointId);
+    try {
+      this.primary = this.connectPrimary(primaryUrl);
+    } catch (err) {
+      this.log.error("primary error", { url: primaryUrl, error: errorMessage(err) });
+      // Fail like an unreachable primary, once the caller has registered us.
+      queueMicrotask(() => {
+        this.charger.close(1011, "Primary CSMS unreachable");
+        this.teardown();
+      });
+      return;
+    }
 
-    for (const url of this.route.secondaries) {
+    for (const backend of this.route.secondaries) {
       const state: SecondaryState = {
-        url,
+        url: buildTargetUrl(backend, this.chargePointId),
         ws: null,
         queue: [],
         keepalive: null,
         reconnectTimer: null,
         lastPongAt: Date.now(),
       };
+      try {
+        state.ws = this.connectSecondary(state);
+      } catch (err) {
+        // A secondary must never affect the charger or the primary: skip it.
+        this.log.error("secondary skipped", { url: state.url, error: errorMessage(err) });
+        continue;
+      }
       this.secondaries.push(state);
-      state.ws = this.connectSecondary(state);
     }
 
     this.charger.on("message", (data) => {
-      const raw = data.toString();
-      this.log.debug("charger → proxy", { message: this.summarise(raw) });
+      const raw = rawDataToString(data);
+      this.log.debugOcppFrame("charger → proxy", raw);
 
       if (this.primary?.readyState === WebSocket.OPEN) {
         this.primary.send(raw);
@@ -95,8 +99,8 @@ export class ChargerConnection {
         if (sec.ws?.readyState === WebSocket.OPEN) {
           try {
             sec.ws.send(raw);
-          } catch {
-            /* best-effort */
+          } catch (err) {
+            this.log.warn("secondary send failed", { url: sec.url, error: errorMessage(err) });
           }
         } else {
           this.enqueueForSecondary(sec, raw);
@@ -125,8 +129,8 @@ export class ChargerConnection {
     });
 
     this.log.info("session started", {
-      primary: this.route.primary,
-      secondaries: this.route.secondaries,
+      primary: primaryUrl,
+      secondaries: this.secondaries.map((secondary) => secondary.url),
       protocol: this.protocol,
     });
   }
@@ -137,12 +141,11 @@ export class ChargerConnection {
    * tears the whole session down (chargers expect to talk to exactly one
    * CSMS at a time).
    */
-  private connectPrimary(baseUrl: string): WebSocket {
-    const url = buildTargetUrl(baseUrl, this.chargePointId);
-
+  private connectPrimary(url: string): WebSocket {
     const ws = new WebSocket(url, this.protocol ? [this.protocol] : OCPP_SUBPROTOCOLS, {
       headers: this.buildHeaders(),
       handshakeTimeout: 10_000,
+      autoPong: false,
     });
 
     ws.on("open", () => {
@@ -150,8 +153,8 @@ export class ChargerConnection {
     });
 
     ws.on("message", (data) => {
-      const raw = data.toString();
-      this.log.debug("primary → charger", { message: this.summarise(raw) });
+      const raw = rawDataToString(data);
+      this.log.debugOcppFrame("primary → charger", raw);
       if (this.charger.readyState === WebSocket.OPEN) {
         this.charger.send(raw);
       }
@@ -175,8 +178,12 @@ export class ChargerConnection {
       }
     });
 
-    ws.on("ping", (data) => forwardPing(this.charger, data));
-    ws.on("pong", (data) => forwardPong(this.charger, data));
+    ws.on("ping", (data) => {
+      forwardPing(this.charger, data);
+    });
+    ws.on("pong", (data) => {
+      forwardPong(this.charger, data);
+    });
 
     return ws;
   }
@@ -188,30 +195,25 @@ export class ChargerConnection {
    * connections aren't dropped by intermediaries.
    */
   private connectSecondary(state: SecondaryState): WebSocket {
-    const url = buildTargetUrl(state.url, this.chargePointId);
-
-    const ws = new WebSocket(url, this.protocol ? [this.protocol] : OCPP_SUBPROTOCOLS, {
+    const ws = new WebSocket(state.url, this.protocol ? [this.protocol] : OCPP_SUBPROTOCOLS, {
       headers: this.buildHeaders(),
       handshakeTimeout: 10_000,
     });
 
     ws.on("open", () => {
-      this.log.info("secondary connected", { url });
+      this.log.info("secondary connected", { url: state.url });
       state.lastPongAt = Date.now();
       this.flushSecondaryQueue(state, ws);
       this.startSecondaryKeepalive(state, ws);
     });
 
     ws.on("message", (data) => {
-      const raw = data.toString();
+      const raw = rawDataToString(data);
       if (raw === "__pong__") {
         state.lastPongAt = Date.now();
         return;
       }
-      this.log.debug("secondary response (ignored)", {
-        url,
-        message: this.summarise(raw),
-      });
+      this.log.debugOcppFrame("secondary response (ignored)", raw, { url: state.url });
     });
 
     ws.on("pong", () => {
@@ -220,7 +222,7 @@ export class ChargerConnection {
 
     ws.on("close", (code, reason) => {
       this.log.warn("secondary disconnected", {
-        url,
+        url: state.url,
         code,
         reason: reason.toString(),
       });
@@ -229,7 +231,10 @@ export class ChargerConnection {
     });
 
     ws.on("error", (err) => {
-      this.log.error("secondary error", { url, error: err.message });
+      this.log.error("secondary error", {
+        url: state.url,
+        error: err.message,
+      });
     });
 
     return ws;
@@ -318,7 +323,7 @@ export class ChargerConnection {
     return headers;
   }
 
-  private teardown() {
+  teardown() {
     if (!this.alive) return;
     this.alive = false;
 
@@ -342,23 +347,10 @@ export class ChargerConnection {
     close(this.charger);
 
     this.log.info("session ended");
+    this.onEnd();
   }
+}
 
-  /** Return a short summary string for logging (avoids dumping huge payloads). */
-  private summarise(raw: string): string {
-    try {
-      const msg = JSON.parse(raw) as unknown[];
-      if (!Array.isArray(msg) || msg.length < 3) return raw.slice(0, 120);
-
-      const type = msg[0] as number;
-      const id = msg[1] as string;
-
-      if (type === OCPP_MSG_CALL) {
-        return `[CALL] ${msg[2]} (${id})`;
-      }
-      return `[${type === 3 ? "RESULT" : "ERROR"}] (${id})`;
-    } catch {
-      return raw.slice(0, 120);
-    }
-  }
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

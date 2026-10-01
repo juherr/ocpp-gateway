@@ -57,6 +57,10 @@ Routing is driven by a JSON file (path from `ROUTES_FILE`, default `./routes.jso
     "CP-001": {
       "primary": "wss://primary-csms.example.com/ocpp",
       "secondaries": ["wss://analytics.example.com/ocpp"]
+    },
+    "CP-002": {
+      "primary": { "url": "wss://fixed-csms.example.com/XXXXXXXX", "appendChargeBoxId": false },
+      "secondaries": []
     }
   }
 }
@@ -64,16 +68,16 @@ Routing is driven by a JSON file (path from `ROUTES_FILE`, default `./routes.jso
 
 - **`default`** (required) — route used for any chargeBoxId not listed under `chargers`.
 - **`chargers`** (optional) — exact-match overrides keyed by chargeBoxId.
-- Each route has a `primary` (string, required) and `secondaries` (array of strings, optional).
+- Each route has a `primary` backend (required) and `secondaries` (array of backends, optional).
+- A backend is either a URL string or an object `{ "url": "...", "appendChargeBoxId": false }`. `appendChargeBoxId` defaults to `true`; a bare string is shorthand for `{ "url": "...", "appendChargeBoxId": true }`.
 
 **Resolution:** for a charger with id `X`, the gateway uses `chargers["X"]` if present, otherwise `default`.
 
-**Target URL:** for every upstream (primary and each secondary), the gateway appends the chargeBoxId as a path segment: `<baseUrl>/<chargeBoxId>`. Different backends may therefore use entirely different base paths. In the example above, charger `CP-001` connects to:
+**Target URL:** for every upstream (primary and each secondary), the gateway appends the url-encoded chargeBoxId as a path segment: `<baseUrl>/<chargeBoxId>` (query parameters are kept). Different backends may therefore use entirely different base paths. For CSMS endpoints that use a fixed URL per charger, set `appendChargeBoxId: false` and the URL is used as-is. In the example above:
 
-- primary → `wss://primary-csms.example.com/ocpp/CP-001`
-- secondary → `wss://analytics.example.com/ocpp/CP-001`
-
-while every other charger goes only to `wss://csms.example.com/ocpp/<chargeBoxId>`.
+- `CP-001` → primary `wss://primary-csms.example.com/ocpp/CP-001`, secondary `wss://analytics.example.com/ocpp/CP-001`
+- `CP-002` → primary `wss://fixed-csms.example.com/XXXXXXXX` (unchanged), no secondary
+- every other charger → `wss://csms.example.com/ocpp/<chargeBoxId>` only
 
 ### Hot reload
 
@@ -101,6 +105,7 @@ git clone https://github.com/juherr/ocpp-gateway.git
 cd ocpp-gateway
 cp routes.example.json routes.json
 # Edit routes.json with your CSMS URLs
+cp .env.example .env   # optional overrides (PORT, LOG_LEVEL, …)
 docker compose up -d
 ```
 
@@ -120,11 +125,12 @@ ROUTES_FILE=./routes.json npm start
 
 All configuration is done through environment variables:
 
-| Variable      | Required | Default         | Description                         |
-| ------------- | -------- | --------------- | ----------------------------------- |
-| `PORT`        | No       | `9000`          | Port the gateway listens on         |
-| `ROUTES_FILE` | No       | `./routes.json` | Path to the JSON routing table      |
-| `LOG_LEVEL`   | No       | `info`          | `debug`, `info`, `warn`, or `error` |
+| Variable                       | Required | Default         | Description                                                                         |
+| ------------------------------ | -------- | --------------- | ----------------------------------------------------------------------------------- |
+| `PORT`                         | No       | `9000`          | Port the gateway listens on                                                         |
+| `ROUTES_FILE`                  | No       | `./routes.json` | Path to the JSON routing table                                                      |
+| `LOG_LEVEL`                    | No       | `info`          | `debug`, `info`, `warn`, or `error`                                                 |
+| `LOG_DEBUG_MESSAGE_MAX_LENGTH` | No       | `120`           | Max char length for debug payload summaries. Leave empty to disable truncation      |
 
 ## Charger setup
 
@@ -147,6 +153,8 @@ ws://gateway:9000/ws/CP-001
 
 If the charger sends HTTP Basic Auth credentials, the gateway forwards the `Authorization` header to all upstream CSMS backends (primary and secondaries) as-is.
 
+The gateway does not validate credentials itself — the CSMS does. When a charger reconnects while its previous session is still open, the gateway closes the stale session first (some CSMS reject a second connection for the same id), but only if the new connection sends the same `Authorization` header. A connection with different credentials cannot disconnect a live charger; it runs alongside and the CSMS accepts or rejects it. Chargers that connect without credentials get no such protection.
+
 ### Sub-protocol negotiation
 
 The gateway negotiates OCPP sub-protocols (`ocpp1.6`, `ocpp2.0`, `ocpp2.0.1`) with the charger and propagates the negotiated sub-protocol to every upstream backend.
@@ -159,12 +167,16 @@ The gateway negotiates OCPP sub-protocols (`ocpp1.6`, `ocpp2.0`, `ocpp2.0.1`) wi
 
 Logs are structured JSON written to stdout/stderr. Each charger session logs under a tag equal to its chargeBoxId, and the resolved route (primary + secondaries) is logged on connect:
 
-```json
+```json lines
 {"time":"2026-06-17T10:00:00.000Z","level":"info","tag":"proxy","msg":"proxy listening","port":9000,"routesFile":"./routes.json"}
 {"time":"2026-06-17T10:00:01.000Z","level":"info","tag":"proxy","msg":"charger connected","chargePointId":"CP-001","protocol":"ocpp1.6","primary":"wss://primary-csms.example.com/ocpp","secondaries":["wss://analytics.example.com/ocpp"]}
+{"time":"2026-06-17T10:00:01.500Z","level":"debug","tag":"CP-001","msg":"charger → proxy","message":"[OCPP CALL] (abc123): [2, \"abc123\", \"BootNotification\", {\"chargePointVendor\":\"Acme\"}]"}
 ```
 
-Set `LOG_LEVEL=debug` to see individual OCPP messages.
+Set `LOG_LEVEL=debug` for OCPP payload summaries (including message-type-prefixed payloads for troubleshooting).
+Set `LOG_DEBUG_MESSAGE_MAX_LENGTH` to a positive integer to cap logged `message` values in debug output.
+Debug output contains raw OCPP payloads (idTags, meter values…), so keep `LOG_LEVEL=debug` for troubleshooting rather than normal operation.
+Leave it unset for the default, or set it empty to disable truncation.
 
 ## Development
 

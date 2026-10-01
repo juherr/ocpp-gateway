@@ -40,17 +40,19 @@ Both workflows install Node via `jdx/mise-action`, which reads the version from 
 
 Modules in `src/`, bundled by `vp pack` into a single CommonJS `dist/index.cjs` (entry `src/index.ts`; `ws` and Node built-ins stay external):
 
-- **`index.ts`** — entrypoint: load config → set log level → load the route table (**fail-fast** if missing/invalid) → start watching it for hot reload → start the gateway.
-- **`config.ts`** — reads env vars (`PORT`, `ROUTES_FILE` default `./routes.json`, `LOG_LEVEL`). Throws on invalid port. No CSMS URLs live here anymore — those are in the routes file.
-- **`routes.ts`** — the routing layer. Pure functions `parseRouteTable` (validates structure, throws on error), `resolveRoute` (`chargers[id] ?? default`), and `buildTargetUrl` (appends url-encoded chargeBoxId to a base URL, trims trailing slashes). `RouteStore` loads the file, resolves routes, and optionally `watch()`es for hot reload (a failed reload keeps the previous table).
-- **`proxy.ts`** — HTTP server (`GET /healthz` → 200) + `WebSocketServer`. Negotiates the OCPP sub-protocol, extracts the chargeBoxId from the **last path segment** of the request URL (URL-decoded), resolves its route via the `RouteStore`, and spawns one `ChargerConnection`. Logs the resolved route on connect. Handles `SIGINT`/`SIGTERM` graceful shutdown.
+- **`index.ts`** — entrypoint: load config → set log level → load the route table (**fail-fast** if missing/invalid) → start watching it for hot reload → start the gateway → wire `SIGINT`/`SIGTERM` to a graceful shutdown (`gateway.close()`).
+- **`config.ts`** — reads env vars (`PORT`, `ROUTES_FILE` default `./routes.json`, `LOG_LEVEL`, `LOG_DEBUG_MESSAGE_MAX_LENGTH`). Throws on invalid port. No CSMS URLs live here anymore — those are in the routes file.
+- **`routes.ts`** — the routing layer. Pure functions `parseRouteTable` (validates structure, throws on error), `resolveRoute` (`chargers[id] ?? default`), and `buildTargetUrl` (appends the url-encoded chargeBoxId to a backend URL, trims trailing slashes, keeps query params — unless the backend sets `appendChargeBoxId: false`). `RouteStore` loads the file, resolves routes, and optionally `watch()`es for hot reload (a failed reload keeps the previous table).
+- **`proxy.ts`** — HTTP server (`GET /healthz` → 200) + `WebSocketServer`. Negotiates the OCPP sub-protocol, extracts the chargeBoxId from the **last path segment** of the request URL (URL-decoded), resolves its route via the `RouteStore`, and spawns one `ChargerConnection`. Logs the resolved route on connect. `startProxy` returns `{ server, close() }`; it registers no process handlers, so tests can start and stop gateways freely (see `test/helpers.ts`).
+- **`sessions.ts`** — `SessionRegistry`: live sessions per chargeBoxId, used by `proxy.ts` to replace a reconnecting charger's stale session (same credentials only).
 - **`connection.ts`** — the core. `ChargerConnection` takes a resolved `Route` and owns the full lifecycle of one charger session and all its upstream links.
-- **`logger.ts`** — structured JSON logging to stdout (stderr for errors), filtered by level. Each connection logs under a tag = chargeBoxId.
+- **`logger.ts`** — structured JSON logging to stdout (stderr for errors), filtered by level. Each connection logs under a tag = chargeBoxId; `debugOcppFrame` logs OCPP frames at debug level, truncated to `LOG_DEBUG_MESSAGE_MAX_LENGTH`. `configureLogger` accepts an injectable sink (tests silence it in `test/setup.ts`).
+- **`utils/`** — `value-parsers.ts` (env parsing used by `config.ts`) and `websocket.ts` (`forwardPing`/`forwardPong`/`rawDataToString`). Both come from upstream.
 - **`types.ts`** — OCPP message-type constants and the sub-protocol preference list (`ocpp2.0.1` > `ocpp2.0` > `ocpp1.6`).
 
 ### Routing model
 
-A `routes.json` has a required `default` route and an optional `chargers` map keyed by chargeBoxId. Each route = `{ primary: string, secondaries: string[] }`. Resolution is exact-match on the id, falling back to `default`. Real `routes.json` is gitignored; `routes.example.json` is the committed template.
+A `routes.json` has a required `default` route and an optional `chargers` map keyed by chargeBoxId. Each route = `{ primary: Backend, secondaries: Backend[] }`, where a backend is written as a URL string or `{ url, appendChargeBoxId? }` and normalised to `{ url, appendChargeBoxId }` (default `true`); URLs are validated at load time. Resolution is exact-match on the id, falling back to `default`. Real `routes.json` is gitignored; `routes.example.json` is the committed template.
 
 ### Connection model (the key invariant)
 
@@ -58,9 +60,9 @@ Per charger, the gateway holds one **primary** link and N **secondary** links:
 
 - **Charger → upstream**: every message is forwarded to the primary AND mirrored to all secondaries.
 - **Upstream → charger**: ONLY the primary's responses go back to the charger. Secondary responses are logged and discarded — secondaries are strictly one-way mirrors.
-- **Primary failure tears down the whole session** (chargers expect exactly one CSMS). A **secondary failure must never affect the charger or the primary** — this is a hard rule; all secondary I/O is wrapped best-effort.
+- **Primary failure tears down the whole session** (chargers expect exactly one CSMS). A **secondary failure must never affect the charger or the primary** — this is a hard rule; all secondary I/O is wrapped best-effort. Connection setup never throws: `new WebSocket()` rejects some URLs synchronously (bad scheme, `#fragment`), so a refused secondary is skipped and a refused primary closes the charger with 1011, like an unreachable one.
 
-For each upstream the gateway builds `<baseUrl>/<chargeBoxId>` via `buildTargetUrl` (so different backends may use different base paths). HTTP Basic Auth (`Authorization` header) is forwarded as-is to all upstreams. Note: the **primary path is not buffered** — messages sent before the primary link is OPEN are dropped (only secondaries have a replay queue).
+For each upstream the gateway builds `<baseUrl>/<chargeBoxId>` via `buildTargetUrl` (so different backends may use different base paths), or uses the URL unchanged when the backend sets `appendChargeBoxId: false`. When a charger reconnects with an id that already has a live session, `proxy.ts` tears the old session down first (some CSMS reject a second connection for the same id) — but only if the newcomer presents the **same `Authorization` header** (`SessionRegistry` in `sessions.ts`, constant-time comparison). The gateway does not authenticate chargers itself, so this stops anyone who knows a chargeBoxId from kicking the real charger; a mismatched newcomer runs alongside and the CSMS decides. `autoPong` is disabled on the charger server and the primary socket so pings/pongs are forwarded end-to-end instead of being answered locally. HTTP Basic Auth (`Authorization` header) is forwarded as-is to all upstreams. Note: the **primary path is not buffered** — messages sent before the primary link is OPEN are dropped (only secondaries have a replay queue).
 
 ### Secondary resilience (in `connection.ts`)
 
@@ -71,7 +73,7 @@ Charger sessions live for days/weeks, so secondaries get extras tuned by the `SE
 - **Pong-timeout detection** — if no pong arrives within the timeout, the socket is force-closed to trigger reconnect.
 - **Bounded replay queue** per secondary while disconnected; oldest messages drop first when full.
 
-WebSocket ping/pong frames are forwarded between charger and primary via the module-level `forwardPing`/`forwardPong` helpers, which guard on `readyState === OPEN`.
+WebSocket ping/pong frames are forwarded between charger and primary via the `forwardPing`/`forwardPong` helpers in `utils/websocket.ts`, which guard on `readyState === OPEN`.
 
 ## Conventions
 
