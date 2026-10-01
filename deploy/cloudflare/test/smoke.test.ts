@@ -1,47 +1,46 @@
 /**
- * Live smoke test of the Worker → Container relay, run against `npm run dev`
- * (wrangler dev: the Worker in workerd, the gateway image in local Docker).
- * Skipped unless SMOKE_GATEWAY_URL is set:
- *
- *   cd deploy/cloudflare && cp .dev.vars.example .dev.vars && npm run dev
- *   SMOKE_GATEWAY_URL=http://127.0.0.1:8787 npx vitest run deploy/cloudflare/test/smoke.test.ts
- *
- * The mock CSMS listen on this machine (ports 9100–9102); the container reaches
- * them at host.docker.internal, as configured by .dev.vars.example.
+ * Live smoke test of the Worker → Container relay under `npm run dev`; skipped
+ * unless SMOKE_GATEWAY_URL is set. See README.md, "Smoke test".
  */
 import { once } from "node:events";
-import type { IncomingMessage } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import { connectWhenOpen, makeCsms, sleep, waitFor, waitForClose } from "../../../test/helpers";
+import {
+  boot,
+  connectWhenOpen,
+  makeCsms,
+  sleep,
+  waitFor,
+  waitForClose,
+} from "../../../test/helpers";
 
-const GATEWAY_URL = process.env.SMOKE_GATEWAY_URL;
-const BASE_DOMAIN = process.env.SMOKE_BASE_DOMAIN ?? "ocpp.example.com";
-const CSMS_PORT = Number(process.env.SMOKE_CSMS_PORT ?? 9100);
+const WS_URL = process.env.SMOKE_GATEWAY_URL?.replace(/^http/, "ws");
 // Optional: a real CSMS (e.g. a test SteVe) routed from ROUTES_JSON in .dev.vars.
 const REAL_TENANT = process.env.SMOKE_REAL_TENANT;
 const REAL_CHARGE_BOX_ID = process.env.SMOKE_REAL_CHARGE_BOX_ID;
 const REAL_AUTH = process.env.SMOKE_REAL_AUTHORIZATION;
 
+// Must match wrangler.jsonc (TENANT_BASE_DOMAIN) and .dev.vars.example (ports).
+const BASE_DOMAIN = "ocpp.example.com";
+const CSMS_PORT = 9100;
 const AUTH = "Basic c21va2U6dGVzdA==";
 // The first request cold-starts the container.
 const OPEN_TIMEOUT = 30_000;
+const STEP_TIMEOUT = 5000;
 
-/** A mock CSMS that also logs every upstream connection the gateway opens. */
-function csms(tag: string, port: number) {
-  const server = makeCsms(tag, port);
-  const connections: { path?: string; protocol: string; auth?: string; ws: WebSocket }[] = [];
-  server.wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
-    connections.push({ path: req.url, protocol: ws.protocol, auth: req.headers.authorization, ws });
-  });
-  const to = (id: string) => connections.filter((c) => c.path?.endsWith(`/${id}`));
-  return { ...server, connections, to };
-}
+type Csms = ReturnType<typeof makeCsms>;
 
-let globalCsms: ReturnType<typeof csms>;
-let csmsA: ReturnType<typeof csms>;
-let csmsB: ReturnType<typeof csms>;
+let globalCsms: Csms;
+let csmsA: Csms;
+let csmsB: Csms;
+let allCsms: Csms[];
 let sockets: WebSocket[] = [];
+
+/** The upstream connections a mock CSMS accepted for `id`. */
+const upstreams = (csms: Csms, id: string) =>
+  csms.connections().filter((c) => c.path?.endsWith(`/${id}`));
+
+const headers = (tenant: string) => ({ host: `${tenant}.${BASE_DOMAIN}`, Authorization: AUTH });
 
 /** Open a charger connection through the Worker as if it dialled `<tenant>.<base>`. */
 async function charger(
@@ -49,32 +48,32 @@ async function charger(
   id: string,
   options: { protocol?: string; headers?: Record<string, string> } = {},
 ) {
-  const ws = await connectWhenOpen(
-    `${GATEWAY_URL!.replace(/^http/, "ws")}/${id}`,
-    options.protocol ?? "ocpp1.6",
-    OPEN_TIMEOUT,
-    { host: `${tenant}.${BASE_DOMAIN}`, Authorization: AUTH, ...options.headers },
-  );
+  const ws = await connectWhenOpen(`${WS_URL}/${id}`, options.protocol ?? "ocpp1.6", OPEN_TIMEOUT, {
+    ...headers(tenant),
+    ...options.headers,
+  });
   sockets.push(ws);
   const received: string[] = [];
   ws.on("message", (data) => received.push(data.toString()));
   return { ws, received };
 }
 
-const boot = (id: string) =>
-  JSON.stringify([
-    2,
-    id,
-    "BootNotification",
-    { chargePointVendor: "Smoke", chargePointModel: "Test" },
-  ]);
+/**
+ * Wait until the gateway's link to `csms` for `id` is open: the gateway does not
+ * buffer the primary path, so a message sent before then is dropped.
+ */
+const upstreamOpen = (csms: Csms, id: string) =>
+  waitFor(() => upstreams(csms, id).some((c) => c.ws.readyState === WebSocket.OPEN), STEP_TIMEOUT);
 
-describe.skipIf(!GATEWAY_URL)("live smoke: Worker → Container → CSMS", { timeout: 60_000 }, () => {
+const reply = (tag: string) => JSON.stringify([3, "reply", { from: tag }]);
+
+describe.skipIf(!WS_URL)("live smoke: Worker → Container → CSMS", { timeout: 60_000 }, () => {
   beforeAll(async () => {
-    globalCsms = csms("global", CSMS_PORT);
-    csmsA = csms("csms-a", CSMS_PORT + 1);
-    csmsB = csms("csms-b", CSMS_PORT + 2);
-    await Promise.all([globalCsms, csmsA, csmsB].map((s) => once(s.wss, "listening")));
+    globalCsms = makeCsms("global", CSMS_PORT);
+    csmsA = makeCsms("csms-a", CSMS_PORT + 1);
+    csmsB = makeCsms("csms-b", CSMS_PORT + 2);
+    allCsms = [globalCsms, csmsA, csmsB];
+    await Promise.all(allCsms.map((s) => once(s.wss, "listening")));
   });
 
   afterEach(() => {
@@ -83,7 +82,7 @@ describe.skipIf(!GATEWAY_URL)("live smoke: Worker → Container → CSMS", { tim
   });
 
   afterAll(() => {
-    for (const s of [globalCsms, csmsA, csmsB]) s.close();
+    for (const s of allCsms) s.close();
   });
 
   it.each(["ocpp1.6", "ocpp2.0.1"])(
@@ -93,33 +92,32 @@ describe.skipIf(!GATEWAY_URL)("live smoke: Worker → Container → CSMS", { tim
       const { ws, received } = await charger("tenant-a", id, { protocol });
       expect(ws.protocol).toBe(protocol);
 
-      await waitFor(() => csmsA.to(id).length === 1, 5000);
-      const [upstream] = csmsA.to(id);
+      await upstreamOpen(csmsA, id);
+      const [upstream] = upstreams(csmsA, id);
       expect(upstream).toMatchObject({ path: `/csms-a/${id}`, protocol, auth: AUTH });
 
       // Charger → CSMS, and the CSMS reply back.
       ws.send(boot("boot-1"));
-      await waitFor(() => received.some((m) => m.includes('"csms-a"')), 5000);
+      await waitFor(() => received.includes(reply("csms-a")), STEP_TIMEOUT);
 
       // CSMS → charger (a CALL initiated by the CSMS), and the charger's result back.
       upstream.ws.send(JSON.stringify([2, "csms-1", "TriggerMessage", {}]));
-      await waitFor(() => received.some((m) => m.includes('"csms-1"')), 5000);
+      await waitFor(() => received.some((m) => m.includes('"csms-1"')), STEP_TIMEOUT);
       ws.send(JSON.stringify([3, "csms-1", { status: "Accepted" }]));
-      await waitFor(() => csmsA.received().some((m) => m.includes('"csms-1"')), 5000);
+      await waitFor(() => csmsA.received().some((m) => m.includes('"csms-1"')), STEP_TIMEOUT);
     },
   );
 
   it("rejects an unknown tenant with 1008 without dialling any CSMS", async () => {
     const id = "CP-UNKNOWN";
-    const ws = new WebSocket(`${GATEWAY_URL!.replace(/^http/, "ws")}/${id}`, "ocpp1.6", {
-      headers: { host: `nope.${BASE_DOMAIN}`, Authorization: AUTH },
-    });
+    // Not via charger(): the gateway may close the socket before it is open.
+    const ws = new WebSocket(`${WS_URL}/${id}`, "ocpp1.6", { headers: headers("nope") });
     sockets.push(ws);
 
     const { code } = await waitForClose(ws, OPEN_TIMEOUT);
     expect(code).toBe(1008);
     await sleep(500);
-    for (const s of [globalCsms, csmsA, csmsB]) expect(s.to(id)).toHaveLength(0);
+    for (const s of allCsms) expect(upstreams(s, id)).toHaveLength(0);
   });
 
   it("ignores a forged x-forwarded-host and cf-container-target-port", async () => {
@@ -131,10 +129,10 @@ describe.skipIf(!GATEWAY_URL)("live smoke: Worker → Container → CSMS", { tim
       },
     });
 
-    await waitFor(() => csmsA.to(id).length === 1, 5000);
+    await upstreamOpen(csmsA, id);
     expect(ws.readyState).toBe(WebSocket.OPEN);
-    expect(csmsB.to(id)).toHaveLength(0);
-    expect(globalCsms.to(id)).toHaveLength(0);
+    expect(upstreams(csmsB, id)).toHaveLength(0);
+    expect(upstreams(globalCsms, id)).toHaveLength(0);
   });
 
   it("keeps the same chargeBoxId in two tenants apart", async () => {
@@ -142,16 +140,15 @@ describe.skipIf(!GATEWAY_URL)("live smoke: Worker → Container → CSMS", { tim
     const a = await charger("tenant-a", id);
     const b = await charger("tenant-b", id);
 
-    await waitFor(() => csmsA.to(id).length === 1 && csmsB.to(id).length === 1, 5000);
+    await upstreamOpen(csmsA, id);
+    await upstreamOpen(csmsB, id);
     a.ws.send(boot("boot-a"));
     b.ws.send(boot("boot-b"));
-    await waitFor(() => a.received.length > 0 && b.received.length > 0, 5000);
+    await waitFor(() => a.received.length > 0 && b.received.length > 0, STEP_TIMEOUT);
     await sleep(500);
 
-    expect(a.received.join()).toContain('"csms-a"');
-    expect(a.received.join()).not.toContain('"csms-b"');
-    expect(b.received.join()).toContain('"csms-b"');
-    expect(b.received.join()).not.toContain('"csms-a"');
+    expect(a.received).toEqual([reply("csms-a")]);
+    expect(b.received).toEqual([reply("csms-b")]);
     expect(a.ws.readyState).toBe(WebSocket.OPEN);
     expect(b.ws.readyState).toBe(WebSocket.OPEN);
   });
@@ -159,17 +156,20 @@ describe.skipIf(!GATEWAY_URL)("live smoke: Worker → Container → CSMS", { tim
   it("replaces a reconnecting charger's stale session", async () => {
     const id = "CP-RECONNECT";
     const first = await charger("tenant-a", id);
-    const closed = waitForClose(first.ws, 5000);
+    const closed = waitForClose(first.ws, STEP_TIMEOUT);
 
     const second = await charger("tenant-a", id);
 
     expect((await closed).code).toBe(1000);
-    // The gateway does not buffer the primary path: wait for the new upstream link.
+    // The stale upstream link closes with the old session: wait for the new one.
     await waitFor(
-      () => csmsA.to(id).filter((c) => c.ws.readyState === WebSocket.OPEN).length === 1,
+      () =>
+        upstreams(csmsA, id).filter((c) => c.ws.readyState === WebSocket.OPEN).length === 1 &&
+        upstreams(csmsA, id).length === 2,
+      STEP_TIMEOUT,
     );
     second.ws.send(boot("boot-2"));
-    await waitFor(() => second.received.some((m) => m.includes('"csms-a"')), 5000);
+    await waitFor(() => second.received.includes(reply("csms-a")), STEP_TIMEOUT);
   });
 
   it.skipIf(!REAL_TENANT || !REAL_CHARGE_BOX_ID)(
@@ -180,8 +180,8 @@ describe.skipIf(!GATEWAY_URL)("live smoke: Worker → Container → CSMS", { tim
       });
       expect(ws.protocol).toBe("ocpp1.6");
 
-      // Messages sent before the gateway's primary link is open are dropped (the
-      // primary path is not buffered), so retry like a charger would.
+      // The real CSMS link cannot be observed from here and the primary path is
+      // not buffered, so retry like a charger would.
       const result = () =>
         received
           .map((m) => JSON.parse(m))

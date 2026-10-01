@@ -3,7 +3,15 @@ import { connect } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import type { Config } from "../src/config";
-import { connectWhenOpen, makeCsms, sleep, startGateway, waitFor, waitForClose } from "./helpers";
+import {
+  boot,
+  connectWhenOpen,
+  makeCsms,
+  sleep,
+  startGateway,
+  waitFor,
+  waitForClose,
+} from "./helpers";
 
 const AUTH = "Basic dXNlcjpwYXNz";
 
@@ -46,8 +54,6 @@ async function charger(
   ws.on("message", (data) => received.push(data.toString()));
   return { ws, received };
 }
-
-const boot = (id: string) => JSON.stringify([2, id, "BootNotification", { model: "X" }]);
 
 describe("multi-tenant routing", () => {
   it("routes tenant-a/CP-001 and tenant-b/CP-001 to their own CSMS, side by side", async () => {
