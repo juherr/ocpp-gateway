@@ -156,6 +156,8 @@ describe.skipIf(!WS_URL)("live smoke: Worker → Container → CSMS", { timeout:
   it("replaces a reconnecting charger's stale session", async () => {
     const id = "CP-RECONNECT";
     const first = await charger("tenant-a", id);
+    // Replace an established session, not one still dialling its CSMS.
+    await upstreamOpen(csmsA, id);
     const closed = waitForClose(first.ws, STEP_TIMEOUT);
 
     const second = await charger("tenant-a", id);
