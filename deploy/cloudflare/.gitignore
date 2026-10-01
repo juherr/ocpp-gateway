@@ -3,3 +3,4 @@ node_modules/
 .dev.vars
 routes.json
 wrangler.local.jsonc
+secrets.json

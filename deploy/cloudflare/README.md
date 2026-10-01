@@ -23,13 +23,14 @@ The Worker holds no OCPP or tenant logic: the gateway resolves the tenant (see [
 | `src/index.ts`        | The Worker entrypoint and the `OcppGateway` Container class                                              |
 | `wrangler.jsonc`      | Route, variables, container image (`../../Dockerfile`) and Durable Object binding                        |
 | `test/forward.test.ts`| Boundary tests, run by the root `npm test`                                                              |
+| `test/smoke.test.ts`  | End-to-end test against `npm run dev` (skipped by `npm test`), see [Smoke test](#smoke-test)            |
 
 CI (`cloudflare` job in `.github/workflows/docker.yml`) runs `npm ci`, `npm run typecheck` (the Worker against the Workers/Containers types) and `npm run dry-run` (validates `wrangler.jsonc`, bundles the Worker and builds the container image — no Cloudflare credentials, nothing deployed).
 
 ## Prerequisites
 
-- A Cloudflare account on the **Workers Paid** plan (required for Containers).
-- A zone on Cloudflare (here `example.com`) with a **proxied wildcard DNS record** `*.ocpp` (e.g. `AAAA *.ocpp 100::`).
+- A Cloudflare account on the **Workers Paid** plan: Containers are not available on the Free plan. One always-on `basic` instance (1/4 vCPU, 1 GiB, 4 GB disk) plus its Durable Object, which never hibernates while a charger is connected, costs roughly $12–25/month at [current prices](https://developers.cloudflare.com/containers/platform/pricing/), on top of the $5 plan.
+- A zone on Cloudflare (here `example.com`) with a **proxied wildcard DNS record** `*.ocpp` (e.g. `AAAA *.ocpp 100::`). Workers [Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) cannot be wildcards, hence the route.
 - An **edge certificate covering `*.ocpp.example.com`**: Universal SSL only covers first-level subdomains (`*.example.com`), so use Advanced Certificate Manager / Total TLS, or put tenants directly under the zone (`*.example.com`).
 - Docker (or a compatible engine) running locally: `wrangler` builds the image from the repository's `Dockerfile` (`linux/amd64`).
 - Node 24 (see the repository's `mise.toml`).
@@ -39,11 +40,11 @@ CI (`cloudflare` job in `.github/workflows/docker.yml`) runs `npm ci`, `npm run 
 | Name                 | Kind                | Description                                                                                          |
 | -------------------- | ------------------- | ---------------------------------------------------------------------------------------------------- |
 | `TENANT_BASE_DOMAIN` | `vars`              | Tenants are subdomains of this domain: `tenant-a.ocpp.example.com` → `tenant-a`                       |
-| `ROUTES_JSON`        | secret              | The gateway's routing table (the `routes.json` content), written to `/tmp/routes.json` at start      |
+| `ROUTES_JSON`        | required secret     | The gateway's routing table (the `routes.json` content), written to `/tmp/routes.json` at start. Listed in `secrets.required`: `wrangler deploy` fails while it is unset |
 | `LOG_LEVEL`          | `vars`              | Gateway log level (`debug`, `info`, `warn`, `error`)                                                 |
 | `routes[].pattern`   | `wrangler.jsonc`    | `*.ocpp.example.com/*` on your zone                                                                   |
 
-The Container class (`src/index.ts`) passes these to the gateway and also sets `TENANT_HOST_HEADER=x-forwarded-host`, `ROUTES_FILE=/tmp/routes.json` and `PORT=9000`. Replace every `example.com` with your own domain.
+The Container class (`src/index.ts`) passes these to the gateway and also sets `TENANT_HOST_HEADER=x-forwarded-host`, `ROUTES_FILE=/tmp/routes.json` and `PORT=9000`. Replace every `example.com` with your own domain. `observability` is enabled so that the gateway's logs (the container's stdout) show in the dashboard.
 
 ## Deploy
 
@@ -52,22 +53,30 @@ cd deploy/cloudflare
 npm install
 
 # Routing table with a "tenants" map, see ../../routes.multi-tenant.example.json
-cp ../../routes.multi-tenant.example.json routes.json   # edit with your CSMS URLs
-npx wrangler secret put ROUTES_JSON < routes.json
+cp ../../routes.multi-tenant.example.json routes.json   # edit with your CSMS URLs,
+                                                        # drop the global "default" (see Security)
 
+# First deployment: the Worker does not exist yet, so `wrangler secret put`
+# cannot set ROUTES_JSON beforehand; pass it with the deployment instead.
+jq -n --rawfile routes routes.json '{ROUTES_JSON: $routes}' > secrets.json
+npx wrangler deploy --secrets-file secrets.json && rm secrets.json
+
+# Later deployments
 npm run deploy   # builds the image, pushes it and deploys the Worker
 ```
 
 The first deployment can take a few minutes while the container is provisioned. Then point chargers at `wss://<tenant>.ocpp.example.com/<chargeBoxId>`.
 
-To change the routes, update the secret and redeploy (hot reload does not apply: the file is written once at container start).
+**Changing the routes** (`npx wrangler secret put ROUTES_JSON < routes.json`) creates a new Worker version, which drops every connection, but a **running container keeps the routes it was started with**: `@cloudflare/containers` passes `envVars` only when it starts a container, and the file is written once at container start (hot reload does not apply). The new routes take effect when the container next starts. How to force that restart on Cloudflare has not been validated yet.
 
 ## Local development
 
 ```bash
-cp .dev.vars.example .dev.vars   # edit ROUTES_JSON
+cp .dev.vars.example .dev.vars   # routes to the smoke test's mock CSMS, see below
 npm run dev                      # wrangler dev on http://localhost:8787, container in local Docker
 ```
+
+`.dev.vars` is read when `npm run dev` starts, not on code reloads: restart it after editing the routes. The first request after a restart cold-starts the container (about 20 s locally).
 
 `wrangler dev` rewrites every request URL to the host of the configured route, which would hide the tenant. `npm run dev` therefore runs with a copy of `wrangler.jsonc` without its `routes` line (`wrangler.local.jsonc`, gitignored), so the `Host` you send reaches the Worker:
 
@@ -78,6 +87,30 @@ npx wscat -s ocpp1.6 -H "Host: tenant-b.ocpp.example.com" -c ws://127.0.0.1:8787
 ```
 
 From inside the local container, a CSMS running on your machine is reachable at `ws://host.docker.internal:<port>`. The gateway's logs are the container's stdout: `docker logs <container>`.
+
+### Smoke test
+
+`test/smoke.test.ts` drives the running Worker + Container end to end against mock CSMS on this machine (ports 9100–9102, the ones `.dev.vars.example` routes to): OCPP 1.6 and 2.0.1 both ways with the subprotocol and `Authorization` preserved, an unknown tenant closed with 1008 without dialling any CSMS, forged `x-forwarded-host` / `cf-container-target-port` ignored, the same chargeBoxId in two tenants, and a reconnect replacing the stale session. It is skipped unless `SMOKE_GATEWAY_URL` is set:
+
+```bash
+# from the repository root, with `npm run dev` running
+SMOKE_GATEWAY_URL=http://127.0.0.1:8787 npx vitest run deploy/cloudflare/test/smoke.test.ts
+
+# also boot against a real CSMS: add a tenant routed to it in .dev.vars, e.g.
+# "steve": { "default": { "primary": "wss://csms.example.com/steve/websocket/CentralSystemService" } },
+# and register the chargeBoxId there
+SMOKE_GATEWAY_URL=http://127.0.0.1:8787 SMOKE_REAL_TENANT=steve SMOKE_REAL_CHARGE_BOX_ID=CP-001 \
+  npx vitest run deploy/cloudflare/test/smoke.test.ts -t "real CSMS"
+```
+
+To keep a charger connected for hours (a Heartbeat every minute; the replies are printed):
+
+```bash
+while sleep 60; do echo '[2,"hb","Heartbeat",{}]'; done |
+  websocat -t --protocol ocpp1.6 wss://tenant-a.ocpp.example.com/CP-SOAK
+```
+
+`websocat` does not replace the `Host` header, so against `npm run dev` this charger names no tenant and uses the global routes.
 
 ## Security: the trust boundary
 
@@ -92,6 +125,8 @@ From inside the local container, a CSMS running on your machine is reachable at 
 
 These rules are covered by `test/forward.test.ts` (header overwrite, stripping, pass-through). On the gateway side the boundary fails closed: a request without `x-forwarded-host` (one that did not come through the Worker) or with it twice is rejected with 1008 before any upstream is dialled. Still, never run the gateway with `TENANT_HOST_HEADER` set where clients can reach it directly.
 
+**Omit the global `default` from `ROUTES_JSON`.** The route `*.ocpp.example.com/*` also matches nested names (`*` matches any characters), and the gateway resolves `a.b.ocpp.example.com` to no tenant, i.e. to the global routes (checked with `npm run dev`). Behind this Worker every legitimate charger names a tenant, so global routes are only reachable through such names.
+
 ## Design choices
 
 - **One container for all tenants** (`getContainer(env.OCPP_GATEWAY)`): sessions live in the gateway's memory, so a reconnecting charger must reach the instance that holds its previous session. A single instance guarantees that and keeps one routing table. Per-tenant instances (`getContainer(env.OCPP_GATEWAY, tenantId)`) would isolate tenants further, but require the Worker to resolve the tenant too — a later step.
@@ -101,8 +136,9 @@ These rules are covered by `test/forward.test.ts` (header overwrite, stripping, 
 ## Known limitations
 
 - **WebSocket ping/pong is not end to end.** The Container SDK relays WebSocket *messages* between the charger and the container through the Durable Object; the Workers runtime answers ping frames itself. OCPP traffic (CALL / CALLRESULT / CALLERROR) is unaffected, but the gateway's ping/pong forwarding between charger and primary does not apply. OCPP `Heartbeat` messages are still relayed.
-- **Every deploy drops all connections** (Worker code updates restart the Durable Object); container image rollouts stop the container. Chargers reconnect on their own; plan deploys accordingly. Cloudflare may also restart hosts at any time.
-- **Close codes 1005/1006 become 1000** across the relay.
+- **Every deploy drops all connections** (Worker code updates restart the Durable Object); container image rollouts stop the container. Chargers reconnect on their own; plan deploys accordingly. Cloudflare may also restart hosts at any time. With `npm run dev`, a Worker reload closes chargers with 1006 while the container keeps running, and they reconnect to it at once; a container stop (SIGTERM) closes them with `1001 Server shutting down` (the gateway exits in well under a second).
+- **Close codes 1005/1006 become 1000** across the relay: a crashed container closes chargers with `1000 WebSocket disconnected without sending Close frame`.
+- **The first message after a (re)connect can be lost.** The gateway does not buffer the charger → primary path: a message sent before the CSMS link is open is dropped (with a remote CSMS, a `BootNotification` sent right after the handshake was lost and the charger's retry was accepted). Since every deploy reconnects all chargers at once, expect a burst of retried boots.
 - **`req.socket.remoteAddress`** in the gateway logs is the relay's address, not the charger's.
 - **The Durable Object stays active for as long as a charger is connected** (no WebSocket hibernation with the Container relay); check Cloudflare's pricing for long-lived connections.
 - **Single instance** limits throughput to one container (`instance_type: basic`); scale it with a larger `instance_type`, or move to per-tenant instances.
