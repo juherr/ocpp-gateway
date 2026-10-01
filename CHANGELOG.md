@@ -35,7 +35,7 @@ global primary/secondary configuration. Nothing has been released yet.
   `wrangler deploy` fails while the `ROUTES_JSON` secret is unset, the
   gateway's logs reach the Cloudflare dashboard (observability), and an
   end-to-end smoke test runs against the Worker + Container under
-  `wrangler dev`.
+  `wrangler dev`, in CI too (`cloudflare-smoke` job).
 - Per-chargeBoxId routing table loaded from a JSON file (`ROUTES_FILE`, default
   `./routes.json`): a required `default` route and optional exact-match
   `chargers` overrides, each with one `primary` and any number of read-only

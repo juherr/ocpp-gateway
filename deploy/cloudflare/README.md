@@ -25,7 +25,7 @@ The Worker holds no OCPP or tenant logic: the gateway resolves the tenant (see [
 | `test/forward.test.ts`| Boundary tests, run by the root `npm test`                                                              |
 | `test/smoke.test.ts`  | End-to-end test against `npm run dev` (skipped by `npm test`), see [Smoke test](#smoke-test)            |
 
-CI (`cloudflare` job in `.github/workflows/docker.yml`) runs `npm ci`, `npm run typecheck` (the Worker against the Workers/Containers types) and `npm run dry-run` (validates `wrangler.jsonc`, bundles the Worker and builds the container image — no Cloudflare credentials, nothing deployed).
+CI (`cloudflare` job in `.github/workflows/docker.yml`) runs `npm ci`, `npm run typecheck` (the Worker against the Workers/Containers types) and `npm run dry-run` (validates `wrangler.jsonc`, bundles the Worker and builds the container image — no Cloudflare credentials, nothing deployed). The `cloudflare-smoke` job then runs the [smoke test](#smoke-test) against `npm run dev` on the runner.
 
 ## Prerequisites
 
@@ -90,7 +90,7 @@ From inside the local container, a CSMS running on your machine is reachable at 
 
 ### Smoke test
 
-`test/smoke.test.ts` drives the running Worker + Container end to end against mock CSMS on this machine (ports 9100–9102, the ones `.dev.vars.example` routes to). It is skipped unless `SMOKE_GATEWAY_URL` is set:
+`test/smoke.test.ts` drives the running Worker + Container end to end against mock CSMS on this machine (ports 9100–9102, the ones `.dev.vars.example` routes to). It is skipped unless `SMOKE_GATEWAY_URL` is set (CI runs it in the `cloudflare-smoke` job):
 
 ```bash
 # from the repository root, with `npm run dev` running
@@ -98,7 +98,7 @@ SMOKE_GATEWAY_URL=http://127.0.0.1:8787 npx vitest run deploy/cloudflare/test/sm
 
 # also boot against a real CSMS: add a tenant routed to it in .dev.vars, e.g.
 # "steve": { "default": { "primary": "wss://csms.example.com/steve/websocket/CentralSystemService" } },
-# and register the chargeBoxId there
+# and register the chargeBoxId there; set SMOKE_REAL_AUTHORIZATION to send an Authorization header
 SMOKE_GATEWAY_URL=http://127.0.0.1:8787 SMOKE_REAL_TENANT=steve SMOKE_REAL_CHARGE_BOX_ID=CP-001 \
   npx vitest run deploy/cloudflare/test/smoke.test.ts -t "real CSMS"
 ```
