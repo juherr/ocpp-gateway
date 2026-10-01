@@ -48,11 +48,14 @@ export interface CsmsConnection {
 
 /**
  * A mock CSMS that records what it receives and replies with a tagged result.
- * Listens on an ephemeral port unless `port` is given.
+ * Listens on an ephemeral port unless `port` is given. With `holdHandshakes`,
+ * every upgrade is parked until `releaseHandshakes()`, so the gateway's link
+ * stays `CONNECTING`.
  */
-export function makeCsms(tag: string, port = 0) {
+export function makeCsms(tag: string, port = 0, options: { holdHandshakes?: boolean } = {}) {
   const received: string[] = [];
   const connections: CsmsConnection[] = [];
+  const held: ((accept: boolean) => void)[] = [];
   const last = () => connections.at(-1);
 
   const wss = new WebSocketServer({
@@ -61,6 +64,11 @@ export function makeCsms(tag: string, port = 0) {
       for (const p of OCPP_SUBPROTOCOLS) if (protocols.has(p)) return p;
       return false;
     },
+    ...(options.holdHandshakes && {
+      verifyClient: (_info: unknown, callback: (accept: boolean) => void) => {
+        held.push(callback);
+      },
+    }),
   });
 
   wss.on("connection", (ws, req) => {
@@ -87,6 +95,11 @@ export function makeCsms(tag: string, port = 0) {
     protocol: () => last()?.protocol,
     path: () => last()?.path,
     host: () => last()?.host,
+    /** Upgrades parked by `holdHandshakes` and not yet released. */
+    heldHandshakes: () => held.length,
+    releaseHandshakes: () => {
+      for (const accept of held.splice(0)) accept(true);
+    },
     port: () => (wss.address() as AddressInfo).port,
     url: () => `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`,
     close: () => wss.close(),
