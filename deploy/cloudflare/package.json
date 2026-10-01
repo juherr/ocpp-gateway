@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "grep -v '\"routes\"' wrangler.jsonc > wrangler.local.jsonc && wrangler dev -c wrangler.local.jsonc",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dry-run": "wrangler deploy --dry-run --outdir .wrangler/dry-run"
   },
   "dependencies": {
     "@cloudflare/containers": "^0.3.7"

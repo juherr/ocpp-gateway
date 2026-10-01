@@ -24,6 +24,8 @@ The Worker holds no OCPP or tenant logic: the gateway resolves the tenant (see [
 | `wrangler.jsonc`      | Route, variables, container image (`../../Dockerfile`) and Durable Object binding                        |
 | `test/forward.test.ts`| Boundary tests, run by the root `npm test`                                                              |
 
+CI (`cloudflare` job in `.github/workflows/docker.yml`) runs `npm ci`, `npm run typecheck` (the Worker against the Workers/Containers types) and `npm run dry-run` (validates `wrangler.jsonc`, bundles the Worker and builds the container image — no Cloudflare credentials, nothing deployed).
+
 ## Prerequisites
 
 - A Cloudflare account on the **Workers Paid** plan (required for Containers).
