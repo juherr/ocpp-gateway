@@ -1,3 +1,5 @@
 # Copy to .dev.vars for `npm run dev`. The gateway's routing table, as one line.
-ROUTES_JSON={"tenants":{"tenant-a":{"default":{"primary":"wss://csms-a.example.com/ocpp"}},"tenant-b":{"default":{"primary":"wss://csms-b.example.com/ocpp"}}}}
+# Its CSMS are the smoke test's mock CSMS (test/smoke.test.ts), listening on this
+# machine; the container reaches them at host.docker.internal.
+ROUTES_JSON={"default":{"primary":"ws://host.docker.internal:9100/global"},"tenants":{"tenant-a":{"default":{"primary":"ws://host.docker.internal:9101/csms-a"}},"tenant-b":{"default":{"primary":"ws://host.docker.internal:9102/csms-b"}}}}
 LOG_LEVEL=debug

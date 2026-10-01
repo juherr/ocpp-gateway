@@ -33,8 +33,11 @@ export async function startGateway(table: object, overrides: Partial<Config> = {
   };
 }
 
-/** A mock CSMS that records what it receives and replies with a tagged result. */
-export function makeCsms(tag: string) {
+/**
+ * A mock CSMS that records what it receives and replies with a tagged result.
+ * Listens on an ephemeral port unless `port` is given.
+ */
+export function makeCsms(tag: string, port = 0) {
   const received: string[] = [];
   let connections = 0;
   let auth: string | undefined;
@@ -43,7 +46,7 @@ export function makeCsms(tag: string) {
   let host: string | undefined;
 
   const wss = new WebSocketServer({
-    port: 0,
+    port,
     handleProtocols: (protocols) => {
       for (const p of OCPP_SUBPROTOCOLS) if (protocols.has(p)) return p;
       return false;
