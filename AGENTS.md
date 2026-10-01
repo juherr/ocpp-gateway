@@ -84,6 +84,7 @@ WebSocket ping/pong frames are forwarded between charger and primary via the `fo
 
 - Runtime knobs are env vars (`config.ts`); CSMS topology is the routes file (`routes.ts`). Add env options in `config.ts` and surface them in `README.md`/`.env.example`; add routing fields in `routes.ts`'s validator and `routes.example.json`.
 - Keep secondary-side code defensive: wrap sends/closes so a failing secondary can never throw into the charger or primary path.
+- Fail closed on routing inputs: a missing or duplicated host/trusted header is rejected, never collapsed into "no tenant" and routed globally. When adding a fallback, ask whether a charger can reach it with input it does not otherwise control.
 - Log via `createLogger(tag)`, not `console.*`.
 - Never put a real charger id, CSMS hostname, or other personal/infra reference in examples, docs, or tests — use generic placeholders (`CP-001`, `*.example.com`).
 - Code and commit messages in English.
