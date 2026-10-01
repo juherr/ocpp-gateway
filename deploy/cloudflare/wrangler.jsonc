@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ocpp-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+
+  // Every tenant subdomain reaches this Worker. Needs a proxied wildcard DNS
+  // record (`*.ocpp`) and an edge certificate covering `*.ocpp.example.com`.
+  // Keep it on one line: `npm run dev` drops it, because `wrangler dev` would
+  // otherwise rewrite every request URL to the route's host, hiding the tenant.
+  "routes": [{ "pattern": "*.ocpp.example.com/*", "zone_name": "example.com" }],
+
+  "vars": {
+    "TENANT_BASE_DOMAIN": "ocpp.example.com",
+    "LOG_LEVEL": "info",
+  },
+  // ROUTES_JSON is a secret: wrangler secret put ROUTES_JSON < routes.json
+
+  "containers": [
+    {
+      "class_name": "OcppGateway",
+      // The repository's own Dockerfile, unchanged.
+      "image": "../../Dockerfile",
+      "image_build_context": "../..",
+      "instance_type": "basic",
+      "max_instances": 1,
+    },
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "OCPP_GATEWAY", "class_name": "OcppGateway" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OcppGateway"] }],
+}

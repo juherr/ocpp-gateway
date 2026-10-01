@@ -57,7 +57,7 @@ A `routes.json` has a required `default` route and an optional `chargers` map ke
 
 ### Tenancy and the trust boundary
 
-The tenant is transport/routing context, never read from or written to OCPP frames. Sessions are keyed by `(tenantId, chargeBoxId)`, so the same chargeBoxId in two tenants never collides (no eviction across tenants). Never trust a tenant-selecting header from a charger: only the header named by `TENANT_HOST_HEADER` is read (instead of `Host`, no fallback), and it must be set by a proxy that strips client-supplied values.
+The tenant is transport/routing context, never read from or written to OCPP frames. Sessions are keyed by `(tenantId, chargeBoxId)`, so the same chargeBoxId in two tenants never collides (no eviction across tenants). Never trust a tenant-selecting header from a charger: only the header named by `TENANT_HOST_HEADER` is read (instead of `Host`, no fallback), and it must be set by a proxy that strips client-supplied values. `deploy/cloudflare/` is that proxy for Cloudflare: a Worker (`src/forward.ts`, runtime-agnostic and tested by the root `npm test`) forwarding to a Container running the unchanged image. It has its own `package.json`/`tsconfig.json` (`npm run typecheck` there), not part of the root build.
 
 ### Connection model (the key invariant)
 

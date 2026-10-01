@@ -140,13 +140,15 @@ Point `*.ocpp.example.com` at the gateway (DNS, or `/etc/hosts` entries such as 
 
 ### Behind a reverse proxy: the trusted host header
 
-The gateway reads the hostname from the `Host` header by default. When a reverse proxy in front of it rewrites `Host`, set `TENANT_HOST_HEADER` (e.g. `x-forwarded-host`) and have the proxy put the original hostname there.
+The gateway reads the hostname from the `Host` header by default. When a reverse proxy in front of it rewrites `Host` (as the Cloudflare Container runtime may), set `TENANT_HOST_HEADER` (e.g. `x-forwarded-host`) and have the proxy put the original hostname there.
 
 **Security:** never trust a tenant chosen by the charger. The hostname a charger dials is already under its control, which is fine: it only selects *which* tenant's CSMS will authenticate it (the gateway forwards `Authorization`, the CSMS validates it). But a header such as `X-OCPP-Tenant` or `X-Forwarded-Host` sent by a client must never be accepted blindly:
 
 - `X-Forwarded-Host` (or any other header) is **ignored** unless named by `TENANT_HOST_HEADER`;
 - once it is named, the gateway trusts it **instead of** `Host` (no fallback), so it must only be reachable through a proxy that **deletes any client-supplied value and sets its own**. That proxy is the trust boundary; never expose such a gateway directly;
 - a request carrying the host header more than once resolves no tenant.
+
+The [Cloudflare example](deploy/cloudflare/README.md) implements this boundary.
 
 ## Quick start
 
@@ -162,6 +164,10 @@ docker run -d \
   -v "$(pwd)/routes.json:/app/routes.json:ro" \
   ghcr.io/juherr/ocpp-gateway:1.0.0
 ```
+
+### On Cloudflare (Worker + Container)
+
+[`deploy/cloudflare/`](deploy/cloudflare/README.md) runs the same image in a Cloudflare Container behind a minimal Worker, with tenants resolved from `*.ocpp.example.com`.
 
 ### Using Docker Compose
 
@@ -257,7 +263,7 @@ npm test           # run unit + integration tests (Vitest)
 npm run dev        # watch-bundle and run
 ```
 
-Tests cover route resolution (`chargers[id]` vs `default`, per-tenant routes, target-URL construction), tenant resolution from the hostname, session isolation per `(tenantId, chargeBoxId)`, and end-to-end integration scenarios with mock primary/secondary CSMS servers verifying that the primary is bidirectional, secondary responses never reach the charger, and `Authorization` + sub-protocol are propagated.
+Tests cover route resolution (`chargers[id]` vs `default`, per-tenant routes, target-URL construction), tenant resolution from the hostname, session isolation per `(tenantId, chargeBoxId)`, the Cloudflare Worker header boundary (`deploy/cloudflare/test/`), and end-to-end integration scenarios with mock primary/secondary CSMS servers verifying that the primary is bidirectional, secondary responses never reach the charger, and `Authorization` + sub-protocol are propagated.
 
 ### Commits & Git hooks
 

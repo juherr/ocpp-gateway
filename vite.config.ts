@@ -15,7 +15,8 @@ export default defineConfig({
     ignorePatterns: ["dist/**", "**/*.md"],
   },
   test: {
-    include: ["test/**/*.test.ts"],
+    // deploy/cloudflare/src/forward.ts is runtime-agnostic, so its tests run here too.
+    include: ["test/**/*.test.ts", "deploy/cloudflare/test/**/*.test.ts"],
     // Silence the logger for every test; logger tests install their own sink.
     setupFiles: ["./test/setup.ts"],
   },

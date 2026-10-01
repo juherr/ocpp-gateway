@@ -1,0 +1,20 @@
+{
+  "name": "ocpp-gateway-cloudflare",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Example: run ocpp-gateway in a Cloudflare Container behind a minimal Worker.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "grep -v '\"routes\"' wrangler.jsonc > wrangler.local.jsonc && wrangler dev -c wrangler.local.jsonc",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.3.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261001.1",
+    "typescript": "^5.7.0",
+    "wrangler": "^4.145.0"
+  }
+}

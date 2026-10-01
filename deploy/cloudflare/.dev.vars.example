@@ -1,0 +1,3 @@
+# Copy to .dev.vars for `npm run dev`. The gateway's routing table, as one line.
+ROUTES_JSON={"tenants":{"tenant-a":{"default":{"primary":"wss://csms-a.example.com/ocpp"}},"tenant-b":{"default":{"primary":"wss://csms-b.example.com/ocpp"}}}}
+LOG_LEVEL=debug
