@@ -118,7 +118,9 @@ global primary/secondary configuration. Nothing has been released yet.
   of the `ws` default of 100 MiB), on the charger side and on every upstream
   CSMS link. An oversized message closes that connection with `1009` and is
   never forwarded nor queued: a charger is disconnected, a primary ends the
-  session, a secondary reconnects. Invalid values stop the gateway at startup.
+  session, a secondary reconnects. Values outside `1`–`2147483647` (the range
+  `ws` can enforce) stop the gateway at startup. 1 MiB is a security default,
+  not an OCPP limit: raise it for large vendor-specific `DataTransfer` payloads.
 - Backend URLs are redacted wherever the gateway logs them or echoes them in a
   routes file error: userinfo, query parameter values and the fragment are
   masked, so credentials in a CSMS URL never reach the logs (now collected by

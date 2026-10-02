@@ -206,7 +206,13 @@ All configuration is done through environment variables:
 | `LOG_DEBUG_MESSAGE_MAX_LENGTH` | No       | `120`           | Max char length for debug payload summaries. Leave empty to disable truncation      |
 | `TENANT_BASE_DOMAIN`           | No       | —               | Tenants are subdomains of this domain (`acme.<domain>` → `acme`). See [Multi-tenant routing](#multi-tenant-routing) |
 | `TENANT_HOST_HEADER`           | No       | — (`Host`)      | Header holding the dialled hostname, set by a **trusted** reverse proxy (e.g. `x-forwarded-host`) |
-| `MAX_MESSAGE_BYTES`            | No       | `1048576`       | Largest WebSocket message (bytes) accepted from a charger or a CSMS; a bigger one closes that connection with `1009` |
+| `MAX_MESSAGE_BYTES`            | No       | `1048576`       | Largest WebSocket message (bytes, `1`–`2147483647`) accepted from a charger or a CSMS; a bigger one closes that connection with `1009`. See [Message size limit](#message-size-limit) |
+
+### Message size limit
+
+`MAX_MESSAGE_BYTES` (default 1 MiB) caps every WebSocket message, on the charger side and on each upstream CSMS link. It is a **security default, not a protocol limit**: the gateway does not authenticate chargers, so without a cap anyone able to open a WebSocket could make it buffer huge messages. Typical OCPP frames are a few KiB, but OCPP does not bound message size — notably OCPP 1.6 `DataTransfer.data` has no maximum length. If your chargers or CSMS exchange large vendor-specific payloads, raise `MAX_MESSAGE_BYTES` accordingly.
+
+A message over the limit closes the link it arrived on with `1009` and is never forwarded nor queued: a charger is disconnected, a primary ends the session (the charger is closed with `1011`), a secondary reconnects without affecting the charger or the primary.
 
 ## Charger setup
 
