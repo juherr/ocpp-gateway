@@ -52,6 +52,9 @@ global primary/secondary configuration. Nothing has been released yet.
   to connect to a fixed CSMS endpoint URL as-is. A bare URL string keeps
   appending the chargeBoxId. This is the fork's counterpart to upstream's
   `PRIMARY_CSMS_APPEND_CHARGE_POINT_ID` / `SECONDARY_CSMS_APPEND_CHARGE_POINT_ID`.
+- `LISTEN_HOST` to bind the gateway to one address or hostname (e.g.
+  `127.0.0.1` behind a local reverse proxy). Unset, it listens on all
+  interfaces as before.
 - OCPP frame debug logging (from upstream): at `LOG_LEVEL=debug`, frames are
   logged as `[OCPP CALL|RESULT|ERROR] (<id>): <payload>`, truncated to
   `LOG_DEBUG_MESSAGE_MAX_LENGTH` characters (default `120`; set it empty to

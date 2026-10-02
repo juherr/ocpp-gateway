@@ -12,8 +12,9 @@ import { OCPP_SUBPROTOCOLS } from "../src/types";
 export const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
- * Start the gateway on an ephemeral port with the given routing table and
- * resolve once it is listening. Call `close()` to shut it down.
+ * Start the gateway on an ephemeral port of 127.0.0.1 (the address the tests
+ * dial) with the given routing table and resolve once it is listening. Call
+ * `close()` to shut it down.
  */
 export async function startGateway(table: object, overrides: Partial<Config> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ocpp-gateway-test-"));
@@ -23,12 +24,20 @@ export async function startGateway(table: object, overrides: Partial<Config> = {
   rmSync(dir, { recursive: true });
 
   const gateway = startProxy(
-    { port: 0, routesFile, loggerConfig: { logLevel: "error" }, ...overrides },
+    {
+      port: 0,
+      listenHost: "127.0.0.1",
+      routesFile,
+      loggerConfig: { logLevel: "error" },
+      ...overrides,
+    },
     routes,
   );
   await once(gateway.server, "listening");
+  const { address, port } = gateway.server.address() as AddressInfo;
   return {
-    port: (gateway.server.address() as AddressInfo).port,
+    address,
+    port,
     close: gateway.close,
   };
 }
@@ -48,11 +57,15 @@ export interface CsmsConnection {
 
 /**
  * A mock CSMS that records what it receives and replies with a tagged result.
- * Listens on an ephemeral port unless `port` is given. With `holdHandshakes`,
- * every upgrade is parked until `releaseHandshakes()`, so the gateway's link
- * stays `CONNECTING`.
+ * Listens on an ephemeral port unless `port` is given, on 127.0.0.1 unless
+ * `host` is given. With `holdHandshakes`, every upgrade is parked until
+ * `releaseHandshakes()`, so the gateway's link stays `CONNECTING`.
  */
-export function makeCsms(tag: string, port = 0, options: { holdHandshakes?: boolean } = {}) {
+export function makeCsms(
+  tag: string,
+  port = 0,
+  options: { holdHandshakes?: boolean; host?: string } = {},
+) {
   const received: string[] = [];
   const connections: CsmsConnection[] = [];
   const held: ((accept: boolean) => void)[] = [];
@@ -60,6 +73,7 @@ export function makeCsms(tag: string, port = 0, options: { holdHandshakes?: bool
 
   const wss = new WebSocketServer({
     port,
+    host: options.host ?? "127.0.0.1",
     handleProtocols: (protocols) => {
       for (const p of OCPP_SUBPROTOCOLS) if (protocols.has(p)) return p;
       return false;
@@ -100,6 +114,7 @@ export function makeCsms(tag: string, port = 0, options: { holdHandshakes?: bool
     releaseHandshakes: () => {
       for (const accept of held.splice(0)) accept(true);
     },
+    address: () => (wss.address() as AddressInfo).address,
     port: () => (wss.address() as AddressInfo).port,
     url: () => `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`,
     close: () => wss.close(),

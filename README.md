@@ -200,6 +200,7 @@ All configuration is done through environment variables:
 | Variable                       | Required | Default         | Description                                                                         |
 | ------------------------------ | -------- | --------------- | ----------------------------------------------------------------------------------- |
 | `PORT`                         | No       | `9000`          | Port the gateway listens on                                                         |
+| `LISTEN_HOST`                  | No       | — (all)         | Address or hostname to listen on (e.g. `127.0.0.1` behind a local reverse proxy)    |
 | `ROUTES_FILE`                  | No       | `./routes.json` | Path to the JSON routing table                                                      |
 | `LOG_LEVEL`                    | No       | `info`          | `debug`, `info`, `warn`, or `error`                                                 |
 | `LOG_DEBUG_MESSAGE_MAX_LENGTH` | No       | `120`           | Max char length for debug payload summaries. Leave empty to disable truncation      |

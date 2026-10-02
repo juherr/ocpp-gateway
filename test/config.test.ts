@@ -7,6 +7,7 @@ describe("loadConfig", () => {
     "LOG_LEVEL",
     "LOG_DEBUG_MESSAGE_MAX_LENGTH",
     "PORT",
+    "LISTEN_HOST",
     "TENANT_BASE_DOMAIN",
     "TENANT_HOST_HEADER",
   ] as const;
@@ -25,11 +26,24 @@ describe("loadConfig", () => {
     const config = loadConfig();
 
     expect(config.port).toBe(9000);
+    expect(config.listenHost).toBeUndefined();
     expect(config.routesFile).toBe("./routes.json");
     expect(config.loggerConfig.logLevel).toBe("info");
     expect(config.loggerConfig.debugMessageMaxLength).toBe(120);
     expect(config.tenantBaseDomain).toBeUndefined();
     expect(config.tenantHostHeader).toBeUndefined();
+  });
+
+  it.each(["127.0.0.1", "::1", "localhost", "0.0.0.0"])("reads LISTEN_HOST %s", (value) => {
+    vi.stubEnv("LISTEN_HOST", ` ${value} `);
+
+    expect(loadConfig().listenHost).toBe(value);
+  });
+
+  it("treats an empty LISTEN_HOST as unset", () => {
+    vi.stubEnv("LISTEN_HOST", "  ");
+
+    expect(loadConfig().listenHost).toBeUndefined();
   });
 
   it("normalises TENANT_BASE_DOMAIN", () => {
@@ -101,6 +115,11 @@ describe("loadConfig", () => {
       envName: "LOG_DEBUG_MESSAGE_MAX_LENGTH",
       value: "abc",
       expectedCause: 'Invalid integer: "abc"',
+    },
+    {
+      envName: "LISTEN_HOST",
+      value: "127.0.0.1:9000",
+      expectedCause: 'Invalid listen host: "127.0.0.1:9000"',
     },
     {
       envName: "TENANT_BASE_DOMAIN",
