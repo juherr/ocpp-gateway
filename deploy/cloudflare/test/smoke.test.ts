@@ -75,9 +75,11 @@ const reply = (tag: string) => JSON.stringify([3, "reply", { from: tag }]);
 
 describe.skipIf(!WS_URL)("live smoke: Worker → Container → CSMS", { timeout: 60_000 }, () => {
   beforeAll(async () => {
-    globalCsms = makeCsms("global", CSMS_PORT);
-    csmsA = makeCsms("csms-a", CSMS_PORT + 1);
-    csmsB = makeCsms("csms-b", CSMS_PORT + 2);
+    // All interfaces: on Linux, host.docker.internal is the Docker bridge, not loopback.
+    const host = "0.0.0.0";
+    globalCsms = makeCsms("global", CSMS_PORT, { host });
+    csmsA = makeCsms("csms-a", CSMS_PORT + 1, { host });
+    csmsB = makeCsms("csms-b", CSMS_PORT + 2, { host });
     allCsms = [globalCsms, csmsA, csmsB];
     await Promise.all(allCsms.map((s) => once(s.wss, "listening")));
   });

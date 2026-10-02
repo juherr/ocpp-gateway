@@ -154,3 +154,30 @@ describe("OCPP proxy integration", () => {
     await h.close();
   });
 });
+
+// Clients dial 127.0.0.1: a server on the `::` wildcard can lose the port's
+// IPv4 loopback to another process bound to 127.0.0.1 (flaky 404s, #10).
+describe("listen address", () => {
+  it("binds the test gateway and mock CSMS to 127.0.0.1", async () => {
+    const csms = makeCsms("csms");
+    await once(csms.wss, "listening");
+    const gateway = await startGateway({ default: { primary: csms.url(), secondaries: [] } });
+
+    expect(gateway.address).toBe("127.0.0.1");
+    expect(csms.address()).toBe("127.0.0.1");
+
+    csms.close();
+    await gateway.close();
+  });
+
+  it("listens on all interfaces when listenHost is unset", async () => {
+    const gateway = await startGateway(
+      { default: { primary: "ws://127.0.0.1:1", secondaries: [] } },
+      { listenHost: undefined },
+    );
+
+    expect(["::", "0.0.0.0"]).toContain(gateway.address);
+
+    await gateway.close();
+  });
+});
