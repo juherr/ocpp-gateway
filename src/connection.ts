@@ -25,7 +25,7 @@ import { forwardPing, forwardPong, rawDataToString } from "./utils/websocket";
  *   messages while reconnecting so brief blips don't lose data.
  */
 
-const SECONDARY_RECONNECT_DELAY_MS = 10_000;
+export const SECONDARY_RECONNECT_DELAY_MS = 10_000;
 const SECONDARY_KEEPALIVE_INTERVAL_MS = 30_000;
 const SECONDARY_PONG_TIMEOUT_MS = 90_000;
 /** Messages buffered per upstream link while it is not open; oldest dropped first. */

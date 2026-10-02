@@ -1,6 +1,10 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import WebSocket from "ws";
-import { ChargerConnection, UPSTREAM_MAX_QUEUE } from "../src/connection";
+import {
+  ChargerConnection,
+  SECONDARY_RECONNECT_DELAY_MS,
+  UPSTREAM_MAX_QUEUE,
+} from "../src/connection";
 import { configureLogger } from "../src/logger";
 import type { Backend } from "../src/routes";
 
@@ -303,5 +307,48 @@ describe("ChargerConnection primary buffering", () => {
 
     expect(primary.sent).toEqual([]);
     expect(warnings).toEqual(["primary not open, dropping message"]);
+  });
+});
+
+describe("ChargerConnection secondary failure", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    return () => vi.useRealTimers();
+  });
+
+  it("reconnects only the secondary after ws closes it for an oversized message", () => {
+    const charger = createMockChargerSocket();
+    const onEnd = vi.fn();
+    new ChargerConnection(
+      charger,
+      { tenantId: null, chargeBoxId: "cp-abc" },
+      {
+        primary: { url: "ws://csms.example/ocpp", appendChargeBoxId: true },
+        secondaries: [{ url: "ws://mirror.example/ocpp", appendChargeBoxId: true }],
+      },
+      "ocpp1.6",
+      undefined,
+      MAX_PAYLOAD,
+      onEnd,
+    );
+    const [primary, secondary] = outbound;
+    primary.emit("open");
+    secondary.emit("open");
+
+    // What ws does on a message above maxPayload: an error, then a 1009 close.
+    secondary.emit("error", new RangeError("Max payload size exceeded"));
+    secondary.emit("close", 1009, Buffer.from(""));
+
+    expect(closeCodes).toEqual([]);
+    expect(onEnd).not.toHaveBeenCalled();
+    charger.emit("message", Buffer.from("m-1"));
+    expect(primary.sent).toEqual(["m-1"]);
+
+    vi.advanceTimersByTime(SECONDARY_RECONNECT_DELAY_MS);
+    expect(connectCalls().map((call) => call.url)).toEqual([
+      "ws://csms.example/ocpp/cp-abc",
+      "ws://mirror.example/ocpp/cp-abc",
+      "ws://mirror.example/ocpp/cp-abc",
+    ]);
   });
 });

@@ -233,6 +233,33 @@ describe("OCPP proxy frame size limit", () => {
     await h.close();
   });
 
+  it("drops only the secondary link when a secondary sends a frame over the limit", async () => {
+    const h = await setup(routes, {}, { maxMessageBytes });
+
+    const fromClient: string[] = [];
+    const client = new WebSocket(`ws://127.0.0.1:${h.proxyPort}/CP-001`, ["ocpp1.6"]);
+    client.on("message", (d) => fromClient.push(d.toString()));
+    await once(client, "open");
+    await waitFor(() => h.primary.connected() && h.secondary.connected());
+
+    const [mirror] = h.secondary.connections();
+    const mirrorClosed = waitForClose(mirror!.ws);
+    mirror!.ws.send(dataTransfer(maxMessageBytes + 1));
+    expect((await mirrorClosed).code).toBe(1009);
+
+    // The charger and the primary carry on as if nothing happened.
+    const message = boot("after-oversize");
+    client.send(message);
+    await waitFor(() => h.primary.received().includes(message) && fromClient.length === 1);
+    expect(fromClient[0]).toContain('"from":"primary"');
+    expect(client.readyState).toBe(WebSocket.OPEN);
+    expect(h.primary.connections()).toHaveLength(1);
+    expect(h.primary.connections()[0]?.ws.readyState).toBe(WebSocket.OPEN);
+
+    client.close();
+    await h.close();
+  });
+
   it("ends the session when the primary sends a frame over the limit, without delivering it", async () => {
     const h = await setup(routes, {}, { maxMessageBytes });
 
