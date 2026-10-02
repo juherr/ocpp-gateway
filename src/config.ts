@@ -7,12 +7,17 @@ import {
   parseIntegerInRange,
   parseOptionalHeaderName,
   parseOptionalPositiveInteger,
-  parsePositiveInteger,
   parseStringUnion,
 } from "./utils/value-parsers";
 
-/** OCPP frames are a few KiB; even large reports stay far below this. */
+/**
+ * A security default, not a protocol limit: typical OCPP frames are a few KiB,
+ * but OCPP does not cap message size (1.6 `DataTransfer.data` has no maximum
+ * length), so deployments with large vendor-specific payloads may need more.
+ */
 export const DEFAULT_MAX_MESSAGE_BYTES = 1024 * 1024;
+/** `ws` truncates `maxPayload` to a signed 32-bit integer; above this it wraps and the limit is lost. */
+const MAX_MESSAGE_BYTES_UPPER_BOUND = 2 ** 31 - 1;
 
 export interface Config {
   port: number;
@@ -69,7 +74,7 @@ export function loadConfig(): Config {
   const maxMessageBytes = parseEnv("MAX_MESSAGE_BYTES", (value) =>
     value === undefined || value.trim() === ""
       ? DEFAULT_MAX_MESSAGE_BYTES
-      : parsePositiveInteger(value),
+      : parseIntegerInRange(value, 1, MAX_MESSAGE_BYTES_UPPER_BOUND),
   );
 
   return {

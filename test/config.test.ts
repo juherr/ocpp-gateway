@@ -42,6 +42,12 @@ describe("loadConfig", () => {
     expect(loadConfig().maxMessageBytes).toBe(2048);
   });
 
+  it("accepts the largest MAX_MESSAGE_BYTES ws can enforce", () => {
+    vi.stubEnv("MAX_MESSAGE_BYTES", "2147483647");
+
+    expect(loadConfig().maxMessageBytes).toBe(2147483647);
+  });
+
   it("treats an empty MAX_MESSAGE_BYTES as the default", () => {
     vi.stubEnv("MAX_MESSAGE_BYTES", "  ");
 
@@ -158,12 +164,19 @@ describe("loadConfig", () => {
     {
       envName: "MAX_MESSAGE_BYTES",
       value: "0",
-      expectedCause: 'Value must be a positive integer: "0"',
+      expectedCause: 'Value must be an integer between 1 and 2147483647: "0"',
     },
     {
       envName: "MAX_MESSAGE_BYTES",
       value: "-1",
-      expectedCause: 'Value must be a positive integer: "-1"',
+      expectedCause: 'Value must be an integer between 1 and 2147483647: "-1"',
+    },
+    {
+      // ws truncates maxPayload to a signed 32-bit integer: this would wrap to
+      // a negative value and disable the limit.
+      envName: "MAX_MESSAGE_BYTES",
+      value: "2147483648",
+      expectedCause: 'Value must be an integer between 1 and 2147483647: "2147483648"',
     },
     {
       envName: "LOG_LEVEL",
