@@ -114,6 +114,11 @@ global primary/secondary configuration. Nothing has been released yet.
 
 ### Security
 
+- WebSocket messages are capped at `MAX_MESSAGE_BYTES` (default 1 MiB, instead
+  of the `ws` default of 100 MiB), on the charger side and on every upstream
+  CSMS link. An oversized message closes that connection with `1009` and is
+  never forwarded nor queued: a charger is disconnected, a primary ends the
+  session, a secondary reconnects. Invalid values stop the gateway at startup.
 - Backend URLs are redacted wherever the gateway logs them or echoes them in a
   routes file error: userinfo, query parameter values and the fragment are
   masked, so credentials in a CSMS URL never reach the logs (now collected by

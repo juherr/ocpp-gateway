@@ -8,6 +8,7 @@ import type { Backend } from "../src/routes";
 interface MockSocket {
   url: string;
   protocols: string | string[] | undefined;
+  options: { maxPayload?: number } | undefined;
   readyState: number;
   sent: string[];
   emit(event: string, ...args: unknown[]): boolean;
@@ -36,6 +37,7 @@ vi.mock("ws", async () => {
     constructor(
       readonly url: string | null,
       readonly protocols?: string | string[],
+      readonly options?: { maxPayload?: number },
     ) {
       super();
       // Like the real ws, reject some URLs synchronously from the constructor.
@@ -69,6 +71,9 @@ vi.mock("ws", async () => {
     default: MockWebSocket,
   };
 });
+
+/** Frame size limit every test session is created with. */
+const MAX_PAYLOAD = 4096;
 
 beforeEach(() => {
   outbound = [];
@@ -106,6 +111,7 @@ function startSession() {
     { primary: { url: "ws://csms.example/ocpp", appendChargeBoxId: true }, secondaries: [] },
     "ocpp1.6",
     undefined,
+    MAX_PAYLOAD,
     () => undefined,
   );
   const [primary] = outbound;
@@ -159,6 +165,7 @@ describe("ChargerConnection", () => {
         { primary, secondaries: [secondary] },
         protocol,
         undefined,
+        MAX_PAYLOAD,
         () => undefined,
       );
 
@@ -168,6 +175,26 @@ describe("ChargerConnection", () => {
       ]);
     },
   );
+
+  it("caps the frame size of the primary and secondary links", () => {
+    new ChargerConnection(
+      createMockChargerSocket(),
+      { tenantId: null, chargeBoxId: "cp-abc" },
+      {
+        primary: { url: "ws://csms.example/ocpp", appendChargeBoxId: true },
+        secondaries: [{ url: "ws://mirror.example/ocpp", appendChargeBoxId: true }],
+      },
+      "ocpp1.6",
+      undefined,
+      MAX_PAYLOAD,
+      () => undefined,
+    );
+
+    expect(outbound.map((socket) => socket.options?.maxPayload)).toEqual([
+      MAX_PAYLOAD,
+      MAX_PAYLOAD,
+    ]);
+  });
 
   it("skips a secondary that ws refuses to dial without affecting the primary", () => {
     const charger = createMockChargerSocket();
@@ -186,6 +213,7 @@ describe("ChargerConnection", () => {
           },
           "ocpp1.6",
           undefined,
+          MAX_PAYLOAD,
           () => undefined,
         ),
     ).not.toThrow();
@@ -212,6 +240,7 @@ describe("ChargerConnection", () => {
           },
           "ocpp1.6",
           undefined,
+          MAX_PAYLOAD,
           onEnd,
         ),
     ).not.toThrow();

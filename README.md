@@ -206,6 +206,7 @@ All configuration is done through environment variables:
 | `LOG_DEBUG_MESSAGE_MAX_LENGTH` | No       | `120`           | Max char length for debug payload summaries. Leave empty to disable truncation      |
 | `TENANT_BASE_DOMAIN`           | No       | —               | Tenants are subdomains of this domain (`acme.<domain>` → `acme`). See [Multi-tenant routing](#multi-tenant-routing) |
 | `TENANT_HOST_HEADER`           | No       | — (`Host`)      | Header holding the dialled hostname, set by a **trusted** reverse proxy (e.g. `x-forwarded-host`) |
+| `MAX_MESSAGE_BYTES`            | No       | `1048576`       | Largest WebSocket message (bytes) accepted from a charger or a CSMS; a bigger one closes that connection with `1009` |
 
 ## Charger setup
 

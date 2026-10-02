@@ -10,6 +10,7 @@ describe("loadConfig", () => {
     "LISTEN_HOST",
     "TENANT_BASE_DOMAIN",
     "TENANT_HOST_HEADER",
+    "MAX_MESSAGE_BYTES",
   ] as const;
 
   beforeEach(() => {
@@ -32,6 +33,19 @@ describe("loadConfig", () => {
     expect(config.loggerConfig.debugMessageMaxLength).toBe(120);
     expect(config.tenantBaseDomain).toBeUndefined();
     expect(config.tenantHostHeader).toBeUndefined();
+    expect(config.maxMessageBytes).toBe(1024 * 1024);
+  });
+
+  it("reads MAX_MESSAGE_BYTES", () => {
+    vi.stubEnv("MAX_MESSAGE_BYTES", "2048");
+
+    expect(loadConfig().maxMessageBytes).toBe(2048);
+  });
+
+  it("treats an empty MAX_MESSAGE_BYTES as the default", () => {
+    vi.stubEnv("MAX_MESSAGE_BYTES", "  ");
+
+    expect(loadConfig().maxMessageBytes).toBe(1024 * 1024);
   });
 
   it.each(["127.0.0.1", "::1", "localhost", "0.0.0.0"])("reads LISTEN_HOST %s", (value) => {
@@ -135,6 +149,21 @@ describe("loadConfig", () => {
       envName: "TENANT_HOST_HEADER",
       value: "X Forwarded Host",
       expectedCause: 'Invalid HTTP header name: "X Forwarded Host"',
+    },
+    {
+      envName: "MAX_MESSAGE_BYTES",
+      value: "1MiB",
+      expectedCause: 'Invalid integer: "1MiB"',
+    },
+    {
+      envName: "MAX_MESSAGE_BYTES",
+      value: "0",
+      expectedCause: 'Value must be a positive integer: "0"',
+    },
+    {
+      envName: "MAX_MESSAGE_BYTES",
+      value: "-1",
+      expectedCause: 'Value must be a positive integer: "-1"',
     },
     {
       envName: "LOG_LEVEL",

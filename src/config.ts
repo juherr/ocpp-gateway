@@ -7,8 +7,12 @@ import {
   parseIntegerInRange,
   parseOptionalHeaderName,
   parseOptionalPositiveInteger,
+  parsePositiveInteger,
   parseStringUnion,
 } from "./utils/value-parsers";
+
+/** OCPP frames are a few KiB; even large reports stay far below this. */
+export const DEFAULT_MAX_MESSAGE_BYTES = 1024 * 1024;
 
 export interface Config {
   port: number;
@@ -23,6 +27,11 @@ export interface Config {
    * proxy in front of the gateway. Unset: the `Host` header is used.
    */
   tenantHostHeader?: string;
+  /**
+   * Largest WebSocket message accepted from a charger or an upstream CSMS;
+   * a bigger one closes that connection with `1009`.
+   */
+  maxMessageBytes: number;
 }
 
 function parseOptionalHostname(value: string | undefined): string | undefined {
@@ -57,6 +66,11 @@ export function loadConfig(): Config {
 
   const tenantBaseDomain = parseEnv("TENANT_BASE_DOMAIN", parseOptionalHostname);
   const tenantHostHeader = parseEnv("TENANT_HOST_HEADER", parseOptionalHeaderName);
+  const maxMessageBytes = parseEnv("MAX_MESSAGE_BYTES", (value) =>
+    value === undefined || value.trim() === ""
+      ? DEFAULT_MAX_MESSAGE_BYTES
+      : parsePositiveInteger(value),
+  );
 
   return {
     port,
@@ -68,5 +82,6 @@ export function loadConfig(): Config {
     },
     tenantBaseDomain,
     tenantHostHeader,
+    maxMessageBytes,
   };
 }

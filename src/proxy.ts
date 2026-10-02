@@ -43,6 +43,7 @@ export function startProxy(
   const wss = new WebSocketServer({
     server,
     autoPong: false,
+    maxPayload: config.maxMessageBytes,
     handleProtocols: (protocols) => {
       for (const p of OCPP_SUBPROTOCOLS) {
         if (protocols.has(p)) return p;
@@ -115,9 +116,17 @@ export function startProxy(
       });
     }
 
-    const conn = new ChargerConnection(ws, key, route, protocol, authHeader, () => {
-      sessions.remove(key, conn);
-    });
+    const conn = new ChargerConnection(
+      ws,
+      key,
+      route,
+      protocol,
+      authHeader,
+      config.maxMessageBytes,
+      () => {
+        sessions.remove(key, conn);
+      },
+    );
     sessions.add(key, authHeader, conn);
   });
 
@@ -132,6 +141,7 @@ export function startProxy(
       routesFile: config.routesFile,
       tenantBaseDomain: config.tenantBaseDomain,
       tenantHostHeader: config.tenantHostHeader ?? "host",
+      maxMessageBytes: config.maxMessageBytes,
     });
   });
 

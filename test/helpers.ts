@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
-import type { Config } from "../src/config";
+import { type Config, DEFAULT_MAX_MESSAGE_BYTES } from "../src/config";
 import { startProxy } from "../src/proxy";
 import { RouteStore } from "../src/routes";
 import { OCPP_SUBPROTOCOLS } from "../src/types";
@@ -29,6 +29,7 @@ export async function startGateway(table: object, overrides: Partial<Config> = {
       listenHost: "127.0.0.1",
       routesFile,
       loggerConfig: { logLevel: "error" },
+      maxMessageBytes: DEFAULT_MAX_MESSAGE_BYTES,
       ...overrides,
     },
     routes,
