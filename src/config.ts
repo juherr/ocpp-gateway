@@ -10,6 +10,15 @@ import {
   parseStringUnion,
 } from "./utils/value-parsers";
 
+/**
+ * A security default, not a protocol limit: typical OCPP frames are a few KiB,
+ * but OCPP does not cap message size (1.6 `DataTransfer.data` has no maximum
+ * length), so deployments with large vendor-specific payloads may need more.
+ */
+export const DEFAULT_MAX_MESSAGE_BYTES = 1024 * 1024;
+/** `ws` truncates `maxPayload` to a signed 32-bit integer; above this it wraps and the limit is lost. */
+const MAX_MESSAGE_BYTES_UPPER_BOUND = 2 ** 31 - 1;
+
 export interface Config {
   port: number;
   /** Address or hostname the gateway listens on. Unset: all interfaces. */
@@ -23,6 +32,11 @@ export interface Config {
    * proxy in front of the gateway. Unset: the `Host` header is used.
    */
   tenantHostHeader?: string;
+  /**
+   * Largest WebSocket message accepted from a charger or an upstream CSMS;
+   * a bigger one closes that connection with `1009`.
+   */
+  maxMessageBytes: number;
 }
 
 function parseOptionalHostname(value: string | undefined): string | undefined {
@@ -57,6 +71,11 @@ export function loadConfig(): Config {
 
   const tenantBaseDomain = parseEnv("TENANT_BASE_DOMAIN", parseOptionalHostname);
   const tenantHostHeader = parseEnv("TENANT_HOST_HEADER", parseOptionalHeaderName);
+  const maxMessageBytes = parseEnv("MAX_MESSAGE_BYTES", (value) =>
+    value === undefined || value.trim() === ""
+      ? DEFAULT_MAX_MESSAGE_BYTES
+      : parseIntegerInRange(value, 1, MAX_MESSAGE_BYTES_UPPER_BOUND),
+  );
 
   return {
     port,
@@ -68,5 +87,6 @@ export function loadConfig(): Config {
     },
     tenantBaseDomain,
     tenantHostHeader,
+    maxMessageBytes,
   };
 }

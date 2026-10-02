@@ -15,6 +15,8 @@ import { forwardPing, forwardPong, rawDataToString } from "./utils/websocket";
  * - Messages from the charger are forwarded to the primary and mirrored
  *   to all secondaries.
  * - Only the primary CSMS can send commands back to the charger.
+ * - Every link (charger, primary, secondaries) rejects messages larger than
+ *   `maxPayload`: `ws` closes it with 1009 before the message is seen here.
  * - Messages the charger sends while the primary is still connecting are
  *   held in a small bounded queue and flushed in order once it opens.
  * - Secondary connections are best-effort; failures never affect the
@@ -23,7 +25,7 @@ import { forwardPing, forwardPong, rawDataToString } from "./utils/websocket";
  *   messages while reconnecting so brief blips don't lose data.
  */
 
-const SECONDARY_RECONNECT_DELAY_MS = 10_000;
+export const SECONDARY_RECONNECT_DELAY_MS = 10_000;
 const SECONDARY_KEEPALIVE_INTERVAL_MS = 30_000;
 const SECONDARY_PONG_TIMEOUT_MS = 90_000;
 /** Messages buffered per upstream link while it is not open; oldest dropped first. */
@@ -53,6 +55,7 @@ export class ChargerConnection {
     private readonly route: Route,
     private readonly protocol: string,
     private readonly authHeader: string | undefined,
+    private readonly maxPayload: number,
     private readonly onEnd: () => void,
   ) {
     // Tag logs with the tenant too: two tenants may share a chargeBoxId.
@@ -163,6 +166,7 @@ export class ChargerConnection {
       headers: this.buildHeaders(),
       handshakeTimeout: 10_000,
       autoPong: false,
+      maxPayload: this.maxPayload,
     });
 
     ws.on("open", () => {
@@ -216,6 +220,7 @@ export class ChargerConnection {
     const ws = new WebSocket(state.url, this.protocol ? [this.protocol] : OCPP_SUBPROTOCOLS, {
       headers: this.buildHeaders(),
       handshakeTimeout: 10_000,
+      maxPayload: this.maxPayload,
     });
 
     ws.on("open", () => {

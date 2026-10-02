@@ -1,6 +1,10 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import WebSocket from "ws";
-import { ChargerConnection, UPSTREAM_MAX_QUEUE } from "../src/connection";
+import {
+  ChargerConnection,
+  SECONDARY_RECONNECT_DELAY_MS,
+  UPSTREAM_MAX_QUEUE,
+} from "../src/connection";
 import { configureLogger } from "../src/logger";
 import type { Backend } from "../src/routes";
 
@@ -8,6 +12,7 @@ import type { Backend } from "../src/routes";
 interface MockSocket {
   url: string;
   protocols: string | string[] | undefined;
+  options: { maxPayload?: number } | undefined;
   readyState: number;
   sent: string[];
   emit(event: string, ...args: unknown[]): boolean;
@@ -36,6 +41,7 @@ vi.mock("ws", async () => {
     constructor(
       readonly url: string | null,
       readonly protocols?: string | string[],
+      readonly options?: { maxPayload?: number },
     ) {
       super();
       // Like the real ws, reject some URLs synchronously from the constructor.
@@ -69,6 +75,9 @@ vi.mock("ws", async () => {
     default: MockWebSocket,
   };
 });
+
+/** Frame size limit every test session is created with. */
+const MAX_PAYLOAD = 4096;
 
 beforeEach(() => {
   outbound = [];
@@ -106,6 +115,7 @@ function startSession() {
     { primary: { url: "ws://csms.example/ocpp", appendChargeBoxId: true }, secondaries: [] },
     "ocpp1.6",
     undefined,
+    MAX_PAYLOAD,
     () => undefined,
   );
   const [primary] = outbound;
@@ -159,6 +169,7 @@ describe("ChargerConnection", () => {
         { primary, secondaries: [secondary] },
         protocol,
         undefined,
+        MAX_PAYLOAD,
         () => undefined,
       );
 
@@ -168,6 +179,26 @@ describe("ChargerConnection", () => {
       ]);
     },
   );
+
+  it("caps the frame size of the primary and secondary links", () => {
+    new ChargerConnection(
+      createMockChargerSocket(),
+      { tenantId: null, chargeBoxId: "cp-abc" },
+      {
+        primary: { url: "ws://csms.example/ocpp", appendChargeBoxId: true },
+        secondaries: [{ url: "ws://mirror.example/ocpp", appendChargeBoxId: true }],
+      },
+      "ocpp1.6",
+      undefined,
+      MAX_PAYLOAD,
+      () => undefined,
+    );
+
+    expect(outbound.map((socket) => socket.options?.maxPayload)).toEqual([
+      MAX_PAYLOAD,
+      MAX_PAYLOAD,
+    ]);
+  });
 
   it("skips a secondary that ws refuses to dial without affecting the primary", () => {
     const charger = createMockChargerSocket();
@@ -186,6 +217,7 @@ describe("ChargerConnection", () => {
           },
           "ocpp1.6",
           undefined,
+          MAX_PAYLOAD,
           () => undefined,
         ),
     ).not.toThrow();
@@ -212,6 +244,7 @@ describe("ChargerConnection", () => {
           },
           "ocpp1.6",
           undefined,
+          MAX_PAYLOAD,
           onEnd,
         ),
     ).not.toThrow();
@@ -274,5 +307,48 @@ describe("ChargerConnection primary buffering", () => {
 
     expect(primary.sent).toEqual([]);
     expect(warnings).toEqual(["primary not open, dropping message"]);
+  });
+});
+
+describe("ChargerConnection secondary failure", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    return () => vi.useRealTimers();
+  });
+
+  it("reconnects only the secondary after ws closes it for an oversized message", () => {
+    const charger = createMockChargerSocket();
+    const onEnd = vi.fn();
+    new ChargerConnection(
+      charger,
+      { tenantId: null, chargeBoxId: "cp-abc" },
+      {
+        primary: { url: "ws://csms.example/ocpp", appendChargeBoxId: true },
+        secondaries: [{ url: "ws://mirror.example/ocpp", appendChargeBoxId: true }],
+      },
+      "ocpp1.6",
+      undefined,
+      MAX_PAYLOAD,
+      onEnd,
+    );
+    const [primary, secondary] = outbound;
+    primary.emit("open");
+    secondary.emit("open");
+
+    // What ws does on a message above maxPayload: an error, then a 1009 close.
+    secondary.emit("error", new RangeError("Max payload size exceeded"));
+    secondary.emit("close", 1009, Buffer.from(""));
+
+    expect(closeCodes).toEqual([]);
+    expect(onEnd).not.toHaveBeenCalled();
+    charger.emit("message", Buffer.from("m-1"));
+    expect(primary.sent).toEqual(["m-1"]);
+
+    vi.advanceTimersByTime(SECONDARY_RECONNECT_DELAY_MS);
+    expect(connectCalls().map((call) => call.url)).toEqual([
+      "ws://csms.example/ocpp/cp-abc",
+      "ws://mirror.example/ocpp/cp-abc",
+      "ws://mirror.example/ocpp/cp-abc",
+    ]);
   });
 });

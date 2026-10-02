@@ -1,7 +1,8 @@
 import { once } from "node:events";
 import { describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import { boot, makeCsms, sleep, startGateway, waitFor } from "./helpers";
+import type { Config } from "../src/config";
+import { boot, makeCsms, sleep, startGateway, waitFor, waitForClose } from "./helpers";
 
 interface Harness {
   proxyPort: number;
@@ -13,12 +14,13 @@ interface Harness {
 async function setup(
   routesFor: (primaryPort: number, secondaryPort: number) => object,
   primaryOptions: Parameters<typeof makeCsms>[2] = {},
+  gatewayOverrides: Partial<Config> = {},
 ): Promise<Harness> {
   const primary = makeCsms("primary", 0, primaryOptions);
   const secondary = makeCsms("secondary");
   await Promise.all([once(primary.wss, "listening"), once(secondary.wss, "listening")]);
 
-  const gateway = await startGateway(routesFor(primary.port(), secondary.port()));
+  const gateway = await startGateway(routesFor(primary.port(), secondary.port()), gatewayOverrides);
 
   return {
     proxyPort: gateway.port,
@@ -179,5 +181,99 @@ describe("listen address", () => {
     expect(["::", "0.0.0.0"]).toContain(gateway.address);
 
     await gateway.close();
+  });
+});
+
+/** An OCPP DataTransfer CALL padded to exactly `bytes` bytes. */
+function dataTransfer(bytes: number) {
+  const frame = (data: string) =>
+    JSON.stringify([2, "dt-1", "DataTransfer", { vendorId: "Test", data }]);
+  return frame("x".repeat(bytes - frame("").length));
+}
+
+describe("OCPP proxy frame size limit", () => {
+  const maxMessageBytes = 1024;
+  const routes = (pp: number, sp: number) => ({
+    default: { primary: `ws://127.0.0.1:${pp}`, secondaries: [`ws://127.0.0.1:${sp}`] },
+  });
+
+  it("forwards a charger frame at the limit", async () => {
+    const h = await setup(routes, {}, { maxMessageBytes });
+
+    const client = new WebSocket(`ws://127.0.0.1:${h.proxyPort}/CP-001`, ["ocpp1.6"]);
+    await once(client, "open");
+    const message = dataTransfer(maxMessageBytes);
+    client.send(message);
+
+    await waitFor(() => h.primary.received().length === 1 && h.secondary.received().length === 1);
+    expect(h.primary.received()).toEqual([message]);
+    expect(h.secondary.received()).toEqual([message]);
+
+    client.close();
+    await h.close();
+  });
+
+  it("closes a charger sending a frame over the limit with 1009, without forwarding or queueing it", async () => {
+    // The primary stays CONNECTING, so the frame would be queued if it got through.
+    const h = await setup(routes, { holdHandshakes: true }, { maxMessageBytes });
+
+    const client = new WebSocket(`ws://127.0.0.1:${h.proxyPort}/CP-001`, ["ocpp1.6"]);
+    await once(client, "open");
+    await waitFor(() => h.primary.heldHandshakes() === 1 && h.secondary.connected());
+
+    const closed = waitForClose(client);
+    client.send(dataTransfer(maxMessageBytes + 1));
+    expect((await closed).code).toBe(1009);
+
+    h.primary.releaseHandshakes();
+    await sleep(150);
+    expect(h.primary.received()).toEqual([]);
+    expect(h.secondary.received()).toEqual([]);
+
+    await h.close();
+  });
+
+  it("drops only the secondary link when a secondary sends a frame over the limit", async () => {
+    const h = await setup(routes, {}, { maxMessageBytes });
+
+    const fromClient: string[] = [];
+    const client = new WebSocket(`ws://127.0.0.1:${h.proxyPort}/CP-001`, ["ocpp1.6"]);
+    client.on("message", (d) => fromClient.push(d.toString()));
+    await once(client, "open");
+    await waitFor(() => h.primary.connected() && h.secondary.connected());
+
+    const [mirror] = h.secondary.connections();
+    const mirrorClosed = waitForClose(mirror!.ws);
+    mirror!.ws.send(dataTransfer(maxMessageBytes + 1));
+    expect((await mirrorClosed).code).toBe(1009);
+
+    // The charger and the primary carry on as if nothing happened.
+    const message = boot("after-oversize");
+    client.send(message);
+    await waitFor(() => h.primary.received().includes(message) && fromClient.length === 1);
+    expect(fromClient[0]).toContain('"from":"primary"');
+    expect(client.readyState).toBe(WebSocket.OPEN);
+    expect(h.primary.connections()).toHaveLength(1);
+    expect(h.primary.connections()[0]?.ws.readyState).toBe(WebSocket.OPEN);
+
+    client.close();
+    await h.close();
+  });
+
+  it("ends the session when the primary sends a frame over the limit, without delivering it", async () => {
+    const h = await setup(routes, {}, { maxMessageBytes });
+
+    const fromClient: string[] = [];
+    const client = new WebSocket(`ws://127.0.0.1:${h.proxyPort}/CP-001`, ["ocpp1.6"]);
+    client.on("message", (d) => fromClient.push(d.toString()));
+    await once(client, "open");
+    await waitFor(() => h.primary.connected());
+
+    const closed = waitForClose(client);
+    h.primary.connections()[0]?.ws.send(dataTransfer(maxMessageBytes + 1));
+    expect((await closed).code).toBe(1011);
+    expect(fromClient).toEqual([]);
+
+    await h.close();
   });
 });
