@@ -125,9 +125,10 @@ export function startProxy(
     log.error("WebSocket server error", { error: err.message });
   });
 
-  server.listen(config.port, () => {
+  server.listen(config.port, config.listenHost, () => {
     log.info("proxy listening", {
       port: config.port,
+      listenHost: config.listenHost,
       routesFile: config.routesFile,
       tenantBaseDomain: config.tenantBaseDomain,
       tenantHostHeader: config.tenantHostHeader ?? "host",
