@@ -15,6 +15,8 @@ import { forwardPing, forwardPong, rawDataToString } from "./utils/websocket";
  * - Messages from the charger are forwarded to the primary and mirrored
  *   to all secondaries.
  * - Only the primary CSMS can send commands back to the charger.
+ * - Messages the charger sends while the primary is still connecting are
+ *   held in a small bounded queue and flushed in order once it opens.
  * - Secondary connections are best-effort; failures never affect the
  *   charger or the primary link. Secondaries auto-reconnect, send
  *   periodic keepalive pings, and buffer a small bounded queue of
@@ -24,7 +26,8 @@ import { forwardPing, forwardPong, rawDataToString } from "./utils/websocket";
 const SECONDARY_RECONNECT_DELAY_MS = 10_000;
 const SECONDARY_KEEPALIVE_INTERVAL_MS = 30_000;
 const SECONDARY_PONG_TIMEOUT_MS = 90_000;
-const SECONDARY_MAX_QUEUE = 100;
+/** Messages buffered per upstream link while it is not open; oldest dropped first. */
+export const UPSTREAM_MAX_QUEUE = 100;
 
 interface SecondaryState {
   url: string;
@@ -40,6 +43,7 @@ interface SecondaryState {
 export class ChargerConnection {
   private readonly log;
   private primary: WebSocket | null = null;
+  private primaryQueue: string[] = [];
   private secondaries: SecondaryState[] = [];
   private alive = true;
 
@@ -99,8 +103,13 @@ export class ChargerConnection {
       const raw = rawDataToString(data);
       this.log.debugOcppFrame("charger → proxy", raw);
 
-      if (this.primary?.readyState === WebSocket.OPEN) {
-        this.primary.send(raw);
+      const primary = this.primary;
+      if (primary?.readyState === WebSocket.OPEN) {
+        primary.send(raw);
+      } else if (primary?.readyState === WebSocket.CONNECTING) {
+        this.enqueueForPrimary(raw);
+      } else {
+        this.log.warn("primary not open, dropping message", { readyState: primary?.readyState });
       }
 
       for (const sec of this.secondaries) {
@@ -158,6 +167,7 @@ export class ChargerConnection {
 
     ws.on("open", () => {
       this.log.info("primary connected", { url: logUrl });
+      this.flushPrimaryQueue(ws);
     });
 
     ws.on("message", (data) => {
@@ -248,15 +258,27 @@ export class ChargerConnection {
     return ws;
   }
 
+  private enqueueForPrimary(raw: string) {
+    if (pushBounded(this.primaryQueue, raw)) {
+      this.log.warn("primary queue full, dropping oldest message", { max: UPSTREAM_MAX_QUEUE });
+    }
+  }
+
+  /** Teardown empties the queue, so nothing reaches the primary of an ended session. */
+  private flushPrimaryQueue(ws: WebSocket) {
+    if (this.primaryQueue.length === 0) return;
+    this.log.info("primary flushing queued messages", { count: this.primaryQueue.length });
+    for (const msg of this.primaryQueue) ws.send(msg);
+    this.primaryQueue = [];
+  }
+
   private enqueueForSecondary(state: SecondaryState, raw: string) {
-    if (state.queue.length >= SECONDARY_MAX_QUEUE) {
-      state.queue.shift();
+    if (pushBounded(state.queue, raw)) {
       this.log.warn("secondary queue full, dropping oldest message", {
         url: state.logUrl,
-        max: SECONDARY_MAX_QUEUE,
+        max: UPSTREAM_MAX_QUEUE,
       });
     }
-    state.queue.push(raw);
   }
 
   private flushSecondaryQueue(state: SecondaryState, ws: WebSocket) {
@@ -334,6 +356,7 @@ export class ChargerConnection {
   teardown() {
     if (!this.alive) return;
     this.alive = false;
+    this.primaryQueue = [];
 
     for (const sec of this.secondaries) {
       this.stopSecondaryKeepalive(sec);
@@ -357,6 +380,14 @@ export class ChargerConnection {
     this.log.info("session ended");
     this.onEnd();
   }
+}
+
+/** Append `raw` to `queue`, dropping the oldest message when full; true if one was dropped. */
+function pushBounded(queue: string[], raw: string): boolean {
+  const full = queue.length >= UPSTREAM_MAX_QUEUE;
+  if (full) queue.shift();
+  queue.push(raw);
+  return full;
 }
 
 function errorMessage(err: unknown): string {

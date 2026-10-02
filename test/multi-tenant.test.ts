@@ -68,9 +68,7 @@ describe("multi-tenant routing", () => {
 
     // Same chargeBoxId, same credentials: only the tenant tells them apart.
     const a = await charger(gw.port, "tenant-a.ocpp.example.com");
-    await waitFor(() => csmsA.connected());
     const b = await charger(gw.port, "tenant-b.ocpp.example.com");
-    await waitFor(() => csmsB.connected());
 
     a.ws.send(boot("from-a"));
     b.ws.send(boot("from-b"));
@@ -138,7 +136,6 @@ describe("multi-tenant routing", () => {
       });
 
       const a = await charger(gw.port, "tenant-a.ocpp.example.com", { protocol });
-      await waitFor(() => primary.connected() && secondary.connected());
       a.ws.send(boot("m-1"));
       await waitFor(() => secondary.received().length >= 1 && a.received.length >= 1);
       await sleep(100);

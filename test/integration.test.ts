@@ -1,7 +1,7 @@
 import { once } from "node:events";
 import { describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import { makeCsms, sleep, startGateway, waitFor } from "./helpers";
+import { boot, makeCsms, sleep, startGateway, waitFor } from "./helpers";
 
 interface Harness {
   proxyPort: number;
@@ -12,8 +12,9 @@ interface Harness {
 
 async function setup(
   routesFor: (primaryPort: number, secondaryPort: number) => object,
+  primaryOptions: Parameters<typeof makeCsms>[2] = {},
 ): Promise<Harness> {
-  const primary = makeCsms("primary");
+  const primary = makeCsms("primary", 0, primaryOptions);
   const secondary = makeCsms("secondary");
   await Promise.all([once(primary.wss, "listening"), once(secondary.wss, "listening")]);
 
@@ -50,17 +51,13 @@ describe("OCPP proxy integration", () => {
     client.on("message", (d) => fromClient.push(d.toString()));
     await once(client, "open");
 
-    // Wait until the proxy has established the upstream primary link (the
-    // primary path is not buffered, unlike secondaries) before sending.
-    await waitFor(() => h.primary.connected());
-
-    const boot = JSON.stringify([2, "msg-1", "BootNotification", { model: "X" }]);
-    client.send(boot);
+    const message = boot("msg-1");
+    client.send(message);
 
     // (a) primary receives the charger message and (b) secondary receives it too
     await waitFor(() => h.primary.received().length >= 1 && h.secondary.received().length >= 1);
-    expect(h.primary.received()).toContain(boot);
-    expect(h.secondary.received()).toContain(boot);
+    expect(h.primary.received()).toContain(message);
+    expect(h.secondary.received()).toContain(message);
 
     // (a) the primary's reply reaches the charger
     await waitFor(() => fromClient.length >= 1);
@@ -94,12 +91,11 @@ describe("OCPP proxy integration", () => {
 
     const client = new WebSocket(`ws://127.0.0.1:${h.proxyPort}/SIMULATOR-001`, ["ocpp1.6"]);
     await once(client, "open");
-    await waitFor(() => h.primary.connected());
-    const boot = JSON.stringify([2, "m", "BootNotification", {}]);
-    client.send(boot);
+    const message = boot("m");
+    client.send(message);
 
     await waitFor(() => h.primary.received().length >= 1);
-    expect(h.primary.received()).toContain(boot);
+    expect(h.primary.received()).toContain(message);
 
     // default route has no secondaries → mirror CSMS gets nothing
     await sleep(150);
@@ -123,6 +119,36 @@ describe("OCPP proxy integration", () => {
 
     expect(h.primary.path()).toBe("/fixed/XXXXXXXX");
     expect(h.secondary.path()).toBe("/ocpp/CP-001");
+
+    client.close();
+    await h.close();
+  });
+
+  it("delivers charger messages sent before the primary CSMS accepts, in order, once it does", async () => {
+    const h = await setup(
+      (pp, sp) => ({
+        default: { primary: `ws://127.0.0.1:${pp}`, secondaries: [`ws://127.0.0.1:${sp}`] },
+      }),
+      { holdHandshakes: true },
+    );
+
+    const fromClient: string[] = [];
+    const client = new WebSocket(`ws://127.0.0.1:${h.proxyPort}/CP-001`, ["ocpp1.6"]);
+    client.on("message", (d) => fromClient.push(d.toString()));
+    await once(client, "open");
+    await waitFor(() => h.primary.heldHandshakes() === 1);
+
+    client.send(boot("b-1"));
+    client.send(boot("b-2"));
+    // The secondary is open, so once it has both, the gateway has handled them.
+    await waitFor(() => h.secondary.received().length === 2);
+    expect(h.primary.received()).toEqual([]);
+
+    h.primary.releaseHandshakes();
+    await waitFor(() => h.primary.received().length === 2);
+    expect(h.primary.received()).toEqual([boot("b-1"), boot("b-2")]);
+    await waitFor(() => fromClient.length === 2);
+    expect(fromClient.every((m) => m.includes('"from":"primary"'))).toBe(true);
 
     client.close();
     await h.close();

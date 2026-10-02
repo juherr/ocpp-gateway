@@ -87,6 +87,12 @@ global primary/secondary configuration. Nothing has been released yet.
 
 ### Fixed
 
+- Charger messages sent before the gateway's link to the primary CSMS is open
+  (typically the `BootNotification` sent right after the handshake) are no
+  longer silently dropped: they are queued (up to 100, oldest dropped first,
+  with a warning) and delivered in order once the link opens. Chargers no
+  longer wait for a call timeout to boot after every (re)connect.
+
 - A backend URL the WebSocket client refuses to dial (e.g. a typo such as
   `htps://`, or a `#fragment`) no longer crashes the whole gateway on the first
   charger connection: such a secondary is skipped (and logged), and such a

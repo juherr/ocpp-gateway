@@ -41,7 +41,7 @@ Because charger sessions can stay open for days or weeks, secondaries get a few 
 - **Keepalive ping** — the gateway pings each secondary every 30s so idle connections aren't dropped by load balancers or CSMS timeouts, and force-reconnects if no pong is seen within 90s.
 - **Bounded queue** — while a secondary is reconnecting, up to 100 messages per secondary are buffered and replayed once it's back. Older messages are dropped first if the buffer fills.
 
-If the **primary** disconnects, the charger connection is closed (a charger expects exactly one controlling CSMS). A secondary failure never affects the charger or the primary link.
+Messages a charger sends while the gateway is still connecting to its **primary** (usually the `BootNotification` right after the handshake) are buffered, up to 100, and delivered in order once the link is open. If the **primary** disconnects, the charger connection is closed (a charger expects exactly one controlling CSMS). A secondary failure never affects the charger or the primary link.
 
 ## Routing configuration
 
