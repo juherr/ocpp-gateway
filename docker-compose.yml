@@ -2,14 +2,26 @@ services:
   ocpp-gateway:
     build: .
     ports:
-      - "9000:9000"
+      - "127.0.0.1:9000:9000"
+    expose:
+      - "9000"
     # PORT, LOG_LEVEL, LOG_DEBUG_MESSAGE_MAX_LENGTH… (see .env.example).
     env_file:
       - path: .env
         required: false
     environment:
       - ROUTES_FILE=/app/routes.json
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:9000/healthz').then(response => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     volumes:
       # Provide your routing table (see routes.example.json).
-      - ./routes.json:/app/routes.json:ro
+      - "${ROUTES_HOST_PATH:-./routes.json}:/app/routes.json:ro"
     restart: unless-stopped
