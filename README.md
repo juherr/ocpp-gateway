@@ -176,13 +176,13 @@ Coolify can build the gateway from this repository using the existing [`docker-c
 
 1. Create a Docker Compose resource for this repository, select branch `main`, and use `/docker-compose.yml`.
 2. Enable automatic deployments for pushes to `main`.
-3. Create `routes.json` on the Coolify server and set `ROUTES_HOST_PATH` to its absolute host path. The file is mounted read-only at `/app/routes.json`; keep it out of Git. Without this variable, Compose uses `./routes.json` for local development.
-4. Set `LOG_LEVEL` and `LOG_DEBUG_MESSAGE_MAX_LENGTH` if needed. Compose fixes `PORT=9000` and `ROUTES_FILE=/app/routes.json` so the listener matches the health check and port mapping.
+3. Create `routes.json` on the Coolify server and set `ROUTES_HOST_PATH` to its absolute host path. The file must already exist and be readable by the container's `node` user. It is mounted read-only at `/app/routes.json`; keep it out of Git. Without this variable, Compose uses `./routes.json` for local development.
+4. Set `LOG_LEVEL` and `LOG_DEBUG_MESSAGE_MAX_LENGTH` if needed. Compose enforces `PORT=9000`, `LISTEN_HOST=0.0.0.0`, and `ROUTES_FILE=/app/routes.json` regardless of values in `.env`.
 5. Add the public domain in Coolify, targeting container port `9000`. Connect charge points to `wss://<your-domain>/<chargeBoxId>`.
 
 The routes file must contain a valid routing table. For the default route, set its primary backend to your SteVe WebSocket base URL; the gateway appends the URL-encoded charge-box ID. Coolify should report the service healthy when `GET /healthz` returns `200`. The health check uses Node.js, which is present in the runtime image.
 
-The host port is bound to `127.0.0.1`; Coolify routes the public domain to the container's internal port `9000`. Redeployments stop the running gateway and its active OCPP sessions. Charge points must reconnect after the new container starts.
+The Coolify Compose file exposes only the container's internal port `9000`; it does not reserve a host port. Redeployments stop the running gateway and its active OCPP sessions. Charge points must reconnect after the new container starts.
 
 ### Using Docker Compose
 
@@ -191,8 +191,8 @@ git clone https://github.com/juherr/ocpp-gateway.git
 cd ocpp-gateway
 cp routes.example.json routes.json
 # Edit routes.json with your CSMS URLs
-cp .env.example .env   # optional overrides (PORT, LOG_LEVEL, …)
-docker compose up -d
+cp .env.example .env   # optional overrides (LOG_LEVEL, …)
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
 ```
 
 ### From source

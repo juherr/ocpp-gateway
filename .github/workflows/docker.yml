@@ -89,6 +89,9 @@ jobs:
         env:
           SMOKE_GATEWAY_URL: http://127.0.0.1:8787
 
+      - name: Verify Compose deployment contract
+        run: bash test/compose-smoke.sh
+
       - name: Worker and gateway logs
         if: always()
         run: |
