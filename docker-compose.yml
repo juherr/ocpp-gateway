@@ -10,6 +10,7 @@ services:
       - path: .env
         required: false
     environment:
+      - PORT=9000
       - ROUTES_FILE=/app/routes.json
     healthcheck:
       test:

@@ -177,7 +177,7 @@ Coolify can build the gateway from this repository using the existing [`docker-c
 1. Create a Docker Compose resource for this repository, select branch `main`, and use `/docker-compose.yml`.
 2. Enable automatic deployments for pushes to `main`.
 3. Create `routes.json` on the Coolify server and set `ROUTES_HOST_PATH` to its absolute host path. The file is mounted read-only at `/app/routes.json`; keep it out of Git. Without this variable, Compose uses `./routes.json` for local development.
-4. Set `LOG_LEVEL` and `LOG_DEBUG_MESSAGE_MAX_LENGTH` if needed. `PORT` and `ROUTES_FILE` are configured by the Compose file.
+4. Set `LOG_LEVEL` and `LOG_DEBUG_MESSAGE_MAX_LENGTH` if needed. Compose fixes `PORT=9000` and `ROUTES_FILE=/app/routes.json` so the listener matches the health check and port mapping.
 5. Add the public domain in Coolify, targeting container port `9000`. Connect charge points to `wss://<your-domain>/<chargeBoxId>`.
 
 The routes file must contain a valid routing table. For the default route, set its primary backend to your SteVe WebSocket base URL; the gateway appends the URL-encoded charge-box ID. Coolify should report the service healthy when `GET /healthz` returns `200`. The health check uses Node.js, which is present in the runtime image.
