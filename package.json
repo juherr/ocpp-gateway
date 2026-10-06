@@ -40,13 +40,13 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "ws": "^8.21.3"
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@commitlint/cli": "^21.0.2",
     "@commitlint/config-conventional": "^21.0.2",
     "@types/node": "^22.0.0",
-    "@types/ws": "^8.5.0",
+    "@types/ws": "^8.18.2",
     "husky": "^9.1.7",
     "lint-staged": "^17.0.7",
     "typescript": "^5.7.0",
