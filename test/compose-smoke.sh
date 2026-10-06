@@ -31,8 +31,9 @@ cat > "$project_dir/routes.json" <<'EOF'
 }
 EOF
 chmod 644 "$project_dir/routes.json"
+cp "$project_dir/routes.json" "$temp_root/routes-explicit.json"
+chmod 644 "$temp_root/routes-explicit.json"
 
-export ROUTES_HOST_PATH="$project_dir/routes.json"
 compose=(docker compose --project-directory "$project_dir" -f "$project_dir/docker-compose.yml" -p "$project_name")
 
 cleanup() {
@@ -41,6 +42,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
+unset ROUTES_HOST_PATH
+fallback_config="$("${compose[@]}" config --format json)"
+node -e '
+  const assert = require("node:assert/strict");
+  const config = JSON.parse(process.argv[1]);
+  const routeMount = config.services["ocpp-gateway"].volumes.find((volume) => volume.target === "/app/routes.json");
+
+  assert.equal(routeMount.source, process.argv[2], "Unset ROUTES_HOST_PATH must fall back to ./routes.json");
+  assert.equal(routeMount.read_only, true, "The routes file mount must be read-only");
+' "$fallback_config" "$project_dir/routes.json"
+
+export ROUTES_HOST_PATH="$temp_root/routes-explicit.json"
 rendered_config="$("${compose[@]}" config --format json)"
 node -e '
   const assert = require("node:assert/strict");
