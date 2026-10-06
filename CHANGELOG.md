@@ -96,7 +96,7 @@ global primary/secondary configuration. Nothing has been released yet.
 
 - Charger messages sent before the gateway's link to the primary CSMS is open
   (typically the `BootNotification` sent right after the handshake) are no
-  longer silently dropped: they are queued (up to 100, oldest dropped first,
+  longer silently dropped: they are queued (bounded, oldest dropped first,
   with a warning) and delivered in order once the link opens. Chargers no
   longer wait for a call timeout to boot after every (re)connect.
 
@@ -125,6 +125,11 @@ global primary/secondary configuration. Nothing has been released yet.
   session, a secondary reconnects. Values outside `1`–`2147483647` (the range
   `ws` can enforce) stop the gateway at startup. 1 MiB is a security default,
   not an OCPP limit: raise it for large vendor-specific `DataTransfer` payloads.
+- Upstream replay queues (primary while connecting, each secondary while
+  disconnected) are bounded by total size as well as count: 1 MiB or
+  `MAX_MESSAGE_BYTES`, whichever is larger, instead of up to 100 maximum-size
+  messages (~100 MiB) per queue. The oldest messages are dropped first, with a
+  warning; a single maximum-size message is always queued.
 - Backend URLs are redacted wherever the gateway logs them or echoes them in a
   routes file error: userinfo, query parameter values and the fragment are
   masked, so credentials in a CSMS URL never reach the logs (now collected by

@@ -4,6 +4,7 @@ import {
   ChargerConnection,
   SECONDARY_RECONNECT_DELAY_MS,
   UPSTREAM_MAX_QUEUE,
+  UPSTREAM_MAX_QUEUE_BYTES,
 } from "../src/connection";
 import { configureLogger } from "../src/logger";
 import type { Backend } from "../src/routes";
@@ -93,34 +94,51 @@ function createMockChargerSocket() {
   return new WebSocket(null);
 }
 
-/** Capture the messages of warnings logged from now on. */
+/** A structured log entry, as written to the logger sink. */
+type LogEntry = { msg: string } & Record<string, unknown>;
+
+/** Capture the warnings logged from now on. */
 function captureWarnings() {
-  const warnings: string[] = [];
+  const warnings: LogEntry[] = [];
   configureLogger({
     logLevel: "warn",
     sink: {
-      stdout: (line) => warnings.push((JSON.parse(line) as { msg: string }).msg),
+      stdout: (line) => warnings.push(JSON.parse(line) as LogEntry),
       stderr: () => undefined,
     },
   });
   return warnings;
 }
 
-/** Start a session for a charger routed to a single primary and no secondaries. */
-function startSession() {
+const messagesOf = (entries: LogEntry[]) => entries.map(({ msg }) => msg);
+
+/** Start a session for a charger routed to a single primary and, by default, no secondaries. */
+function startSession({ maxPayload = MAX_PAYLOAD, secondaries = [] as Backend[] } = {}) {
   const charger = createMockChargerSocket();
   new ChargerConnection(
     charger,
     { tenantId: null, chargeBoxId: "cp-abc" },
-    { primary: { url: "ws://csms.example/ocpp", appendChargeBoxId: true }, secondaries: [] },
+    { primary: { url: "ws://csms.example/ocpp", appendChargeBoxId: true }, secondaries },
     "ocpp1.6",
     undefined,
-    MAX_PAYLOAD,
+    maxPayload,
     () => undefined,
   );
-  const [primary] = outbound;
-  const send = (raw: string) => charger.emit("message", Buffer.from(raw));
-  return { charger, primary, send };
+  const [primary, secondary] = outbound;
+  const send = (raw: string) => {
+    // The real ws closes the charger with 1009 before such a frame reaches the session.
+    if (Buffer.byteLength(raw) > maxPayload) {
+      throw new Error(`test frame exceeds maxPayload (${maxPayload} bytes)`);
+    }
+    charger.emit("message", Buffer.from(raw));
+  };
+  return { charger, primary, secondary, send };
+}
+
+/** Three distinct messages whose total size exceeds the default queue byte budget. */
+function oversizedBatch() {
+  const size = Math.ceil(UPSTREAM_MAX_QUEUE_BYTES / 2);
+  return ["0", "1", "2"].map((digit) => digit.repeat(size));
 }
 
 describe("ChargerConnection", () => {
@@ -284,7 +302,7 @@ describe("ChargerConnection primary buffering", () => {
     primary.emit("open");
 
     expect(primary.sent).toEqual(messages.slice(1));
-    expect(warnings).toEqual(["primary queue full, dropping oldest message"]);
+    expect(messagesOf(warnings)).toEqual(["primary queue full, dropping oldest message"]);
   });
 
   it("sends nothing to the primary once the session has ended", () => {
@@ -306,9 +324,65 @@ describe("ChargerConnection primary buffering", () => {
     primary.emit("open");
 
     expect(primary.sent).toEqual([]);
-    expect(warnings).toEqual(["primary not open, dropping message"]);
+    expect(messagesOf(warnings)).toEqual(["primary not open, dropping message"]);
   });
 });
+
+describe.each(["primary", "secondary"] as const)(
+  "ChargerConnection %s queue byte bound",
+  (link) => {
+    /** A session whose `link` is still connecting while the other link is open. */
+    function startBufferingSession(maxPayload?: number) {
+      const session = startSession({
+        maxPayload,
+        secondaries: [{ url: "ws://mirror.example/ocpp", appendChargeBoxId: true }],
+      });
+      const [target, other] =
+        link === "primary"
+          ? [session.primary, session.secondary]
+          : [session.secondary, session.primary];
+      other.emit("open");
+      return { target, send: session.send };
+    }
+
+    it("drops the oldest messages with a warning when their total size exceeds the budget", () => {
+      const warnings = captureWarnings();
+      // Large enough for the frames to get past ws, without raising the budget.
+      const { target, send } = startBufferingSession(UPSTREAM_MAX_QUEUE_BYTES);
+
+      const messages = oversizedBatch();
+      for (const message of messages) send(message);
+      target.emit("open");
+
+      expect(target.sent).toEqual(messages.slice(1));
+      const queuedBytes = messages
+        .slice(1)
+        .reduce((total, message) => total + Buffer.byteLength(message), 0);
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          msg: `${link} queue full, dropping oldest message`,
+          dropped: 1,
+          count: 2,
+          bytes: queuedBytes,
+          maxCount: UPSTREAM_MAX_QUEUE,
+          maxBytes: UPSTREAM_MAX_QUEUE_BYTES,
+        }),
+      ]);
+    });
+
+    it("queues and delivers a single message of the maximum size", () => {
+      const maxPayload = 2 * UPSTREAM_MAX_QUEUE_BYTES;
+      const { target, send } = startBufferingSession(maxPayload);
+
+      send("m-1");
+      const largest = "x".repeat(maxPayload);
+      send(largest);
+      target.emit("open");
+
+      expect(target.sent).toEqual([largest]);
+    });
+  },
+);
 
 describe("ChargerConnection secondary failure", () => {
   beforeEach(() => {
