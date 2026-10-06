@@ -7,10 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-First cut of **ocpp-gateway**, a fork of
+## [0.1.0] - 2026-10-06
+
+First release of **ocpp-gateway**, a fork of
 [joulo-ocpp-proxy](https://github.com/joulo-nl/joulo-ocpp-proxy) (MIT). The
 defining change is per-chargeBoxId routing in place of the upstream's single
-global primary/secondary configuration. Nothing has been released yet.
+global primary/secondary configuration. The image is published as
+`ghcr.io/juherr/ocpp-gateway:0.1.0`.
 
 ### Added
 
@@ -82,7 +85,7 @@ global primary/secondary configuration. Nothing has been released yet.
 - Stricter environment parsing (from upstream): an invalid `PORT`, `LOG_LEVEL`
   or `LOG_DEBUG_MESSAGE_MAX_LENGTH` now stops the gateway at startup with a
   message naming the variable, instead of silently falling back.
-- Synced with upstream `joulo-ocpp-proxy` up to `d1b699d` (merged, not
+- Synced with upstream `joulo-ocpp-proxy` up to `7750259` (merged, not
   rebased; later syncs are `git merge upstream/main`). CI commit linting only
   checks the fork's own first-parent commits.
 - Renamed the project from `joulo-ocpp-proxy` to `ocpp-gateway`.
@@ -146,4 +149,5 @@ global primary/secondary configuration. Nothing has been released yet.
   detection, and a bounded per-secondary replay queue.
 - MIT license and upstream attribution.
 
-[Unreleased]: https://github.com/juherr/ocpp-gateway/commits/main
+[Unreleased]: https://github.com/juherr/ocpp-gateway/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/juherr/ocpp-gateway/releases/tag/v0.1.0
