@@ -3,6 +3,7 @@ import { createLogger } from "./logger";
 import { type Route, buildTargetUrl } from "./routes";
 import { type SessionKey, formatSessionKey } from "./sessions";
 import { OCPP_SUBPROTOCOLS } from "./types";
+import { BoundedQueue } from "./utils/bounded-queue";
 import { redactUrl } from "./utils/url";
 import { forwardPing, forwardPong, rawDataToString } from "./utils/websocket";
 
@@ -18,11 +19,13 @@ import { forwardPing, forwardPong, rawDataToString } from "./utils/websocket";
  * - Every link (charger, primary, secondaries) rejects messages larger than
  *   `maxPayload`: `ws` closes it with 1009 before the message is seen here.
  * - Messages the charger sends while the primary is still connecting are
- *   held in a small bounded queue and flushed in order once it opens.
+ *   held in a bounded queue and flushed in order once it opens.
  * - Secondary connections are best-effort; failures never affect the
  *   charger or the primary link. Secondaries auto-reconnect, send
- *   periodic keepalive pings, and buffer a small bounded queue of
+ *   periodic keepalive pings, and buffer a bounded queue of
  *   messages while reconnecting so brief blips don't lose data.
+ * - Every queue is bounded by count and by total bytes, dropping the
+ *   oldest messages first.
  */
 
 export const SECONDARY_RECONNECT_DELAY_MS = 10_000;
@@ -30,13 +33,18 @@ const SECONDARY_KEEPALIVE_INTERVAL_MS = 30_000;
 const SECONDARY_PONG_TIMEOUT_MS = 90_000;
 /** Messages buffered per upstream link while it is not open; oldest dropped first. */
 export const UPSTREAM_MAX_QUEUE = 100;
+/**
+ * Total bytes buffered per upstream link while it is not open; raised to the
+ * session's `maxPayload` when larger, so a maximum-size message always fits.
+ */
+export const UPSTREAM_MAX_QUEUE_BYTES = 1024 * 1024;
 
 interface SecondaryState {
   url: string;
   /** `url` without credentials: the only form that may be logged. */
   logUrl: string;
   ws: WebSocket | null;
-  queue: string[];
+  queue: BoundedQueue;
   keepalive: ReturnType<typeof setInterval> | null;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   lastPongAt: number;
@@ -45,7 +53,7 @@ interface SecondaryState {
 export class ChargerConnection {
   private readonly log;
   private primary: WebSocket | null = null;
-  private primaryQueue: string[] = [];
+  private readonly primaryQueue: BoundedQueue;
   private secondaries: SecondaryState[] = [];
   private alive = true;
 
@@ -60,6 +68,7 @@ export class ChargerConnection {
   ) {
     // Tag logs with the tenant too: two tenants may share a chargeBoxId.
     this.log = createLogger(formatSessionKey(key));
+    this.primaryQueue = this.createQueue();
     this.setup();
   }
 
@@ -87,7 +96,7 @@ export class ChargerConnection {
         url,
         logUrl: redactUrl(url),
         ws: null,
-        queue: [],
+        queue: this.createQueue(),
         keepalive: null,
         reconnectTimer: null,
         lastPongAt: Date.now(),
@@ -110,7 +119,7 @@ export class ChargerConnection {
       if (primary?.readyState === WebSocket.OPEN) {
         primary.send(raw);
       } else if (primary?.readyState === WebSocket.CONNECTING) {
-        this.enqueueForPrimary(raw);
+        this.enqueue("primary", this.primaryQueue, raw);
       } else {
         this.log.warn("primary not open, dropping message", { readyState: primary?.readyState });
       }
@@ -123,7 +132,7 @@ export class ChargerConnection {
             this.log.warn("secondary send failed", { url: sec.logUrl, error: errorMessage(err) });
           }
         } else {
-          this.enqueueForSecondary(sec, raw);
+          this.enqueue("secondary", sec.queue, raw, { url: sec.logUrl });
         }
       }
     });
@@ -263,43 +272,52 @@ export class ChargerConnection {
     return ws;
   }
 
-  private enqueueForPrimary(raw: string) {
-    if (pushBounded(this.primaryQueue, raw)) {
-      this.log.warn("primary queue full, dropping oldest message", { max: UPSTREAM_MAX_QUEUE });
+  private createQueue(): BoundedQueue {
+    // Sized so a maximum-size message always fits; the queue also keeps any
+    // single incoming message, as a safety net for frames that grow when
+    // decoded (invalid UTF-8 becomes U+FFFD).
+    return new BoundedQueue(
+      UPSTREAM_MAX_QUEUE,
+      Math.max(UPSTREAM_MAX_QUEUE_BYTES, this.maxPayload),
+    );
+  }
+
+  private enqueue(
+    link: "primary" | "secondary",
+    queue: BoundedQueue,
+    raw: string,
+    fields: Record<string, unknown> = {},
+  ) {
+    const dropped = queue.push(raw);
+    if (dropped > 0) {
+      this.log.warn(`${link} queue full, dropping oldest message`, {
+        ...fields,
+        dropped,
+        ...queueStats(queue),
+      });
     }
   }
 
   /** Teardown empties the queue, so nothing reaches the primary of an ended session. */
   private flushPrimaryQueue(ws: WebSocket) {
     if (this.primaryQueue.length === 0) return;
-    this.log.info("primary flushing queued messages", { count: this.primaryQueue.length });
-    for (const msg of this.primaryQueue) ws.send(msg);
-    this.primaryQueue = [];
-  }
-
-  private enqueueForSecondary(state: SecondaryState, raw: string) {
-    if (pushBounded(state.queue, raw)) {
-      this.log.warn("secondary queue full, dropping oldest message", {
-        url: state.logUrl,
-        max: UPSTREAM_MAX_QUEUE,
-      });
-    }
+    this.log.info("primary flushing queued messages", queueStats(this.primaryQueue));
+    for (const msg of this.primaryQueue.drain()) ws.send(msg);
   }
 
   private flushSecondaryQueue(state: SecondaryState, ws: WebSocket) {
     if (state.queue.length === 0) return;
     this.log.info("secondary flushing queued messages", {
       url: state.logUrl,
-      count: state.queue.length,
+      ...queueStats(state.queue),
     });
-    for (const msg of state.queue) {
+    for (const msg of state.queue.drain()) {
       try {
         ws.send(msg);
       } catch {
         /* best-effort */
       }
     }
-    state.queue = [];
   }
 
   private startSecondaryKeepalive(state: SecondaryState, ws: WebSocket) {
@@ -361,7 +379,7 @@ export class ChargerConnection {
   teardown() {
     if (!this.alive) return;
     this.alive = false;
-    this.primaryQueue = [];
+    this.primaryQueue.clear();
 
     for (const sec of this.secondaries) {
       this.stopSecondaryKeepalive(sec);
@@ -369,7 +387,7 @@ export class ChargerConnection {
         clearTimeout(sec.reconnectTimer);
         sec.reconnectTimer = null;
       }
-      sec.queue = [];
+      sec.queue.clear();
     }
 
     const close = (ws: WebSocket | null) => {
@@ -387,12 +405,14 @@ export class ChargerConnection {
   }
 }
 
-/** Append `raw` to `queue`, dropping the oldest message when full; true if one was dropped. */
-function pushBounded(queue: string[], raw: string): boolean {
-  const full = queue.length >= UPSTREAM_MAX_QUEUE;
-  if (full) queue.shift();
-  queue.push(raw);
-  return full;
+/** Log fields describing a queue's fill level and bounds. */
+function queueStats(queue: BoundedQueue) {
+  return {
+    count: queue.length,
+    bytes: queue.bytes,
+    maxCount: queue.maxCount,
+    maxBytes: queue.maxBytes,
+  };
 }
 
 function errorMessage(err: unknown): string {

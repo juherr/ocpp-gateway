@@ -39,9 +39,9 @@ Because charger sessions can stay open for days or weeks, secondaries get a few 
 
 - **Auto-reconnect** — if a secondary disconnects, the gateway reconnects after 10s and keeps retrying until the charger session ends.
 - **Keepalive ping** — the gateway pings each secondary every 30s so idle connections aren't dropped by load balancers or CSMS timeouts, and force-reconnects if no pong is seen within 90s.
-- **Bounded queue** — while a secondary is reconnecting, up to 100 messages per secondary are buffered and replayed once it's back. Older messages are dropped first if the buffer fills.
+- **Bounded queue** — while a secondary is reconnecting, up to 100 messages and 1 MiB (or `MAX_MESSAGE_BYTES`, whichever is larger) per secondary are buffered and replayed once it's back. Older messages are dropped first if the buffer fills.
 
-Messages a charger sends while the gateway is still connecting to its **primary** (usually the `BootNotification` right after the handshake) are buffered, up to 100, and delivered in order once the link is open. If the **primary** disconnects, the charger connection is closed (a charger expects exactly one controlling CSMS). A secondary failure never affects the charger or the primary link.
+Messages a charger sends while the gateway is still connecting to its **primary** (usually the `BootNotification` right after the handshake) are buffered within the same bounds and delivered in order once the link is open. If the **primary** disconnects, the charger connection is closed (a charger expects exactly one controlling CSMS). A secondary failure never affects the charger or the primary link.
 
 ## Routing configuration
 
@@ -227,6 +227,8 @@ All configuration is done through environment variables:
 `MAX_MESSAGE_BYTES` (default 1 MiB) caps every WebSocket message, on the charger side and on each upstream CSMS link. It is a **security default, not a protocol limit**: the gateway does not authenticate chargers, so without a cap anyone able to open a WebSocket could make it buffer huge messages. Typical OCPP frames are a few KiB, but OCPP does not bound message size — notably OCPP 1.6 `DataTransfer.data` has no maximum length. If your chargers or CSMS exchange large vendor-specific payloads, raise `MAX_MESSAGE_BYTES` accordingly.
 
 A message over the limit closes the link it arrived on with `1009` and is never forwarded nor queued: a charger is disconnected, a primary ends the session (the charger is closed with `1011`), a secondary reconnects without affecting the charger or the primary.
+
+Messages waiting for an upstream link (the primary while it connects, a secondary while it reconnects) are buffered per link up to 100 messages and 1 MiB or `MAX_MESSAGE_BYTES`, whichever is larger — oldest dropped first — so raising `MAX_MESSAGE_BYTES` does not multiply the memory a session can hold by 100.
 
 ## Charger setup
 
