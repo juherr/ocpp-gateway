@@ -94,18 +94,23 @@ function createMockChargerSocket() {
   return new WebSocket(null);
 }
 
-/** Capture the messages of warnings logged from now on. */
+/** A structured log entry, as written to the logger sink. */
+type LogEntry = { msg: string } & Record<string, unknown>;
+
+/** Capture the warnings logged from now on. */
 function captureWarnings() {
-  const warnings: string[] = [];
+  const warnings: LogEntry[] = [];
   configureLogger({
     logLevel: "warn",
     sink: {
-      stdout: (line) => warnings.push((JSON.parse(line) as { msg: string }).msg),
+      stdout: (line) => warnings.push(JSON.parse(line) as LogEntry),
       stderr: () => undefined,
     },
   });
   return warnings;
 }
+
+const messagesOf = (entries: LogEntry[]) => entries.map(({ msg }) => msg);
 
 /** Start a session for a charger routed to a single primary and, by default, no secondaries. */
 function startSession({ maxPayload = MAX_PAYLOAD, secondaries = [] as Backend[] } = {}) {
@@ -120,7 +125,13 @@ function startSession({ maxPayload = MAX_PAYLOAD, secondaries = [] as Backend[] 
     () => undefined,
   );
   const [primary, secondary] = outbound;
-  const send = (raw: string) => charger.emit("message", Buffer.from(raw));
+  const send = (raw: string) => {
+    // The real ws closes the charger with 1009 before such a frame reaches the session.
+    if (Buffer.byteLength(raw) > maxPayload) {
+      throw new Error(`test frame exceeds maxPayload (${maxPayload} bytes)`);
+    }
+    charger.emit("message", Buffer.from(raw));
+  };
   return { charger, primary, secondary, send };
 }
 
@@ -291,7 +302,7 @@ describe("ChargerConnection primary buffering", () => {
     primary.emit("open");
 
     expect(primary.sent).toEqual(messages.slice(1));
-    expect(warnings).toEqual(["primary queue full, dropping oldest message"]);
+    expect(messagesOf(warnings)).toEqual(["primary queue full, dropping oldest message"]);
   });
 
   it("sends nothing to the primary once the session has ended", () => {
@@ -313,7 +324,7 @@ describe("ChargerConnection primary buffering", () => {
     primary.emit("open");
 
     expect(primary.sent).toEqual([]);
-    expect(warnings).toEqual(["primary not open, dropping message"]);
+    expect(messagesOf(warnings)).toEqual(["primary not open, dropping message"]);
   });
 });
 
@@ -336,14 +347,27 @@ describe.each(["primary", "secondary"] as const)(
 
     it("drops the oldest messages with a warning when their total size exceeds the budget", () => {
       const warnings = captureWarnings();
-      const { target, send } = startBufferingSession();
+      // Large enough for the frames to get past ws, without raising the budget.
+      const { target, send } = startBufferingSession(UPSTREAM_MAX_QUEUE_BYTES);
 
       const messages = oversizedBatch();
       for (const message of messages) send(message);
       target.emit("open");
 
       expect(target.sent).toEqual(messages.slice(1));
-      expect(warnings).toEqual([`${link} queue full, dropping oldest message`]);
+      const queuedBytes = messages
+        .slice(1)
+        .reduce((total, message) => total + Buffer.byteLength(message), 0);
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          msg: `${link} queue full, dropping oldest message`,
+          dropped: 1,
+          count: 2,
+          bytes: queuedBytes,
+          maxCount: UPSTREAM_MAX_QUEUE,
+          maxBytes: UPSTREAM_MAX_QUEUE_BYTES,
+        }),
+      ]);
     });
 
     it("queues and delivers a single message of the maximum size", () => {
