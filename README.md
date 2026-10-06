@@ -155,7 +155,7 @@ The [Cloudflare example](deploy/cloudflare/README.md) implements this boundary.
 
 ### Using Docker (recommended)
 
-A pre-built, multi-arch image is published to GitHub Container Registry on every push to `main` and on version tags.
+A pre-built, multi-arch image is published to GitHub Container Registry. Pin a release tag (`0.1.0`, or `0.1` for the latest patch release); the `main` and `sha-*` tags follow the `main` branch. No `latest` tag is published.
 
 ```bash
 cp routes.example.json routes.json   # edit with your CSMS URLs
@@ -163,7 +163,7 @@ cp routes.example.json routes.json   # edit with your CSMS URLs
 docker run -d \
   -p 9000:9000 \
   -v "$(pwd)/routes.json:/app/routes.json:ro" \
-  ghcr.io/juherr/ocpp-gateway:1.0.0
+  ghcr.io/juherr/ocpp-gateway:0.1.0
 ```
 
 ### On Cloudflare (Worker + Container)
