@@ -69,6 +69,10 @@ global primary/secondary configuration. Nothing has been released yet.
 
 ### Changed
 
+- The default `docker-compose.yml` no longer publishes port `9000` on the host,
+  so it can be used behind Coolify's proxy without reserving a host port. For
+  local access, start the gateway with
+  `docker compose -f docker-compose.yml -f docker-compose.local.yml up -d`.
 - Replaced the upstream global `PRIMARY_CSMS_URL` / `SECONDARY_CSMS_URLS`
   environment configuration with the per-chargeBoxId routing table. Each
   upstream target URL is built as `<baseUrl>/<chargeBoxId>` (query parameters
