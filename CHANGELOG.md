@@ -54,6 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- OCPP frames are no longer parsed for debug logging unless `LOG_LEVEL` is
+  `debug`, sparing the forwarding path that work on large frames.
 - On shutdown, charger sessions are torn down immediately instead of after
   each charger's close handshake, so upstream links close sooner.
 
