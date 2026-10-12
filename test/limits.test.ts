@@ -81,6 +81,46 @@ describe("SessionLimiter", () => {
     expect(limiter.sessionsFrom("a")).toBe(1);
   });
 
+  it("counts the sessions a newcomer would replace as freed", () => {
+    const limiter = new SessionLimiter({
+      maxSessions: 1,
+      maxPendingSessions: 1,
+      maxSessionsPerSource: 1,
+    });
+    const stale = limiter.acquire("a");
+
+    expect(limiter.check("a", [stale])).toBeNull();
+    // Nothing is released by the check itself.
+    expect(limiter.sessions).toBe(1);
+  });
+
+  it("frees a pending slot only for a replaced session still pending", () => {
+    const limiter = new SessionLimiter({ maxPendingSessions: 1 });
+    const open = limiter.acquire("a");
+    open.primaryOpened();
+    limiter.acquire("b");
+
+    expect(limiter.check("a", [open])).toBe("pending");
+  });
+
+  it("frees a per-source slot only in the replaced session's source", () => {
+    const limiter = new SessionLimiter({ maxSessionsPerSource: 1 });
+    const stale = limiter.acquire("a");
+    limiter.acquire("b");
+
+    expect(limiter.check("b", [stale])).toBe("per-source");
+    expect(limiter.check("a", [stale])).toBeNull();
+  });
+
+  it("ignores replaced sessions already released", () => {
+    const limiter = new SessionLimiter({ maxSessions: 1 });
+    const gone = limiter.acquire("a");
+    gone.release();
+    limiter.acquire("b");
+
+    expect(limiter.check("c", [gone])).toBe("global");
+  });
+
   it("forgets a source once its last session is released", () => {
     const limiter = new SessionLimiter({ maxSessionsPerSource: 5 });
     limiter.acquire("a").release();

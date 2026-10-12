@@ -3,7 +3,7 @@ import type { Socket } from "node:net";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { Config } from "./config";
 import { ChargerConnection } from "./connection";
-import { RejectionLog, SessionLimiter } from "./limits";
+import { RejectionLog, type SessionLease, SessionLimiter } from "./limits";
 import { createLogger } from "./logger";
 import type { RouteStore } from "./routes";
 import { type SessionKey, SessionRegistry } from "./sessions";
@@ -53,6 +53,8 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
     });
   const sessions = new SessionRegistry<ChargerConnection>();
   const limiter = new SessionLimiter(config);
+  /** Each live session's hold on the limiter's counters. */
+  const leases = new WeakMap<ChargerConnection, SessionLease>();
   const rejections = new RejectionLog(log);
 
   const server = createServer((req, res) => {
@@ -129,10 +131,14 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
     // Replace this charger's stale session, if any: some CSMS reject a new
     // connection while the old one is still open, forcing a reconnect loop.
     // Only sessions opened with the same credentials are replaced (see
-    // SessionRegistry). The replaced sessions free their slots before the
-    // limits are checked.
-    const { replaced, kept } = sessions.evict(key, authHeader);
-    const refused = limiter.check(source);
+    // SessionRegistry). The limits are checked as if they were gone, and they
+    // are only torn down once the newcomer is admitted: a refused newcomer
+    // must leave a healthy session alone.
+    const stale = sessions.replaceable(key, authHeader).sessions;
+    const refused = limiter.check(
+      source,
+      stale.map((session) => leases.get(session)!),
+    );
     if (refused) {
       // Nothing else is logged for a refused connection: a flood stays one line.
       rejections.record(refused, source);
@@ -140,6 +146,7 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
       return;
     }
 
+    const { replaced, kept } = sessions.evict(key, authHeader);
     log.info("charger connected", {
       tenantId,
       chargePointId,
@@ -173,6 +180,7 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
       options.traceSink,
       () => lease.primaryOpened(),
     );
+    leases.set(conn, lease);
     sessions.add(key, authHeader, conn);
   });
 

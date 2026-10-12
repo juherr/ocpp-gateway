@@ -391,7 +391,17 @@ describe("client sources", () => {
 });
 
 describe("a replacement is checked against the limits it would exceed", () => {
-  it("is refused when the pending cap is full: replacing an open session frees no pending slot", async () => {
+  /** The original session still forwards both ways: its charger and its upstream link are open. */
+  async function expectStillServing(charger: WebSocket, upstream: Csms, received: number) {
+    await sleep(100);
+    expect(charger.readyState).toBe(WebSocket.OPEN);
+    expect(upstream.connections()[0].ws.readyState).toBe(WebSocket.OPEN);
+    charger.send("still here");
+    await waitFor(() => upstream.received().length === received + 1);
+    expect(upstream.received().at(-1)).toBe("still here");
+  }
+
+  it("is refused when the pending cap is full, leaving the open session it would replace untouched", async () => {
     const auth = "Basic same-charger";
     const upstream = await csms({ holdHandshakes: true });
     const gw = await gateway(upstream, { maxPendingSessions: 1 });
@@ -408,20 +418,40 @@ describe("a replacement is checked against the limits it would exceed", () => {
     const reconnect = dial(gw.port, { auth });
     expect(await closeCode(reconnect)).toBe(TRY_AGAIN_LATER);
     expect(upstreamAttempts(upstream)).toBe(2);
+    await expectStillServing(charger, upstream, 1);
   });
 
-  it("is refused from another source whose bucket is full", async () => {
+  it("is refused from another source whose bucket is full, leaving the session it would replace untouched", async () => {
     const auth = "Basic same-charger";
     const upstream = await csms();
     const gw = await gateway(upstream, { maxSessionsPerSource: 1, clientIpHeader: "x-real-ip" });
 
-    await waitForOpen(dial(gw.port, { auth, headers: { "x-real-ip": "198.51.100.1" } }));
+    const charger = dial(gw.port, { auth, headers: { "x-real-ip": "198.51.100.1" } });
+    await waitForOpen(charger);
+    await waitFor(() => upstream.connections().length === 1);
     await waitForOpen(dial(gw.port, { headers: { "x-real-ip": "198.51.100.2" } }));
     await waitFor(() => upstream.connections().length === 2);
 
     const moved = dial(gw.port, { auth, headers: { "x-real-ip": "198.51.100.2" } });
     expect(await closeCode(moved)).toBe(TRY_AGAIN_LATER);
     expect(upstream.connections()).toHaveLength(2);
+    await expectStillServing(charger, upstream, 0);
+  });
+
+  it("reuses the pending slot of the session it replaces", async () => {
+    const auth = "Basic same-charger";
+    const upstream = await csms({ holdHandshakes: true });
+    const gw = await gateway(upstream, { maxPendingSessions: 1 });
+
+    const stale = dial(gw.port, { auth });
+    await waitForOpen(stale);
+    await waitFor(() => upstream.heldHandshakes() === 1);
+
+    const fresh = dial(gw.port, { auth });
+    await waitForOpen(fresh);
+    expect(await closeCode(stale)).toBe(1000);
+    await waitFor(() => upstream.heldHandshakes() === 2);
+    expect(fresh.readyState).toBe(WebSocket.OPEN);
   });
 });
 

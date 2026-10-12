@@ -26,6 +26,12 @@ export interface SessionLimits {
 
 /** One admitted session's hold on the counters. Both methods are idempotent. */
 export interface SessionLease {
+  /** The source the session counts against. */
+  readonly source: string;
+  /** Whether the session still holds its slots. */
+  readonly live: boolean;
+  /** Whether the session still counts as pending. */
+  readonly pending: boolean;
   /** The primary link opened: the session no longer counts as pending. */
   primaryOpened(): void;
   /** The session ended: free all its counters. */
@@ -56,12 +62,21 @@ export class SessionLimiter {
     return this.perSource.get(source) ?? 0;
   }
 
-  /** The first limit a new session from `source` would exceed, or `null` if it may start. */
-  check(source: string): LimitReason | null {
+  /**
+   * The first limit a new session from `source` would exceed, or `null` if it
+   * may start. The sessions it would `replace` count as freed, so a
+   * replacement can be checked before anything is torn down.
+   */
+  check(source: string, replace: readonly SessionLease[] = []): LimitReason | null {
     const { maxSessions, maxPendingSessions, maxSessionsPerSource } = this.limits;
-    if (maxSessions !== undefined && this.live >= maxSessions) return "global";
-    if (maxPendingSessions !== undefined && this.pending >= maxPendingSessions) return "pending";
-    if (maxSessionsPerSource !== undefined && this.sessionsFrom(source) >= maxSessionsPerSource) {
+    const freed = replace.filter((lease) => lease.live);
+    const live = this.live - freed.length;
+    const pending = this.pending - freed.filter((lease) => lease.pending).length;
+    const fromSource =
+      this.sessionsFrom(source) - freed.filter((lease) => lease.source === source).length;
+    if (maxSessions !== undefined && live >= maxSessions) return "global";
+    if (maxPendingSessions !== undefined && pending >= maxPendingSessions) return "pending";
+    if (maxSessionsPerSource !== undefined && fromSource >= maxSessionsPerSource) {
       return "per-source";
     }
     return null;
@@ -81,6 +96,13 @@ export class SessionLimiter {
       this.pending -= 1;
     };
     return {
+      source,
+      get live() {
+        return live;
+      },
+      get pending() {
+        return pending;
+      },
       // After release, pending is already settled: nothing left to do.
       primaryOpened: settlePending,
       release: () => {
