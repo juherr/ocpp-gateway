@@ -1,4 +1,5 @@
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
+import type { Socket } from "node:net";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { Config } from "./config";
 import { ChargerConnection } from "./connection";
@@ -9,9 +10,15 @@ import { type SessionKey, SessionRegistry } from "./sessions";
 import { HostnameTenantResolver, type TenantResolver, readSingleHeader } from "./tenants";
 import type { TraceSink } from "./trace/writer";
 import { OCPP_SUBPROTOCOLS } from "./types";
+import { clientSource } from "./utils/ip";
 import { redactUrl } from "./utils/url";
 
 const log = createLogger("proxy");
+
+/** Bytes a refused client may still send: its close frame (at most 131 bytes) and a ping or two. */
+const REFUSED_MAX_BYTES = 1024;
+/** How long a refused client has to answer the close before its socket is cut. */
+const REFUSED_CLOSE_TIMEOUT_MS = 1000;
 
 export interface ProxyOptions {
   /** Resolves the tenant from the dialled hostname. Default: hostnames from the routes file and `TENANT_BASE_DOMAIN`. */
@@ -72,7 +79,7 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
       log.warn("rejected connection: no charge point ID in path", {
         url: req.url,
       });
-      refuse(ws, 1002, "Charge point ID required in URL path");
+      refuse(ws, req.socket, 1002, "Charge point ID required in URL path");
       return;
     }
 
@@ -86,7 +93,7 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
         chargePointId,
         ip: req.socket.remoteAddress,
       });
-      refuse(ws, 1008, "Missing or ambiguous host");
+      refuse(ws, req.socket, 1008, "Missing or ambiguous host");
       return;
     }
     const tenantId = tenants.resolve(host);
@@ -98,18 +105,20 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
         chargePointId,
         ip: req.socket.remoteAddress,
       });
-      refuse(ws, 1008, "No route for this charge point");
+      refuse(ws, req.socket, 1008, "No route for this charge point");
       return;
     }
 
-    // Fail closed too: a missing, duplicated or empty client IP must never
-    // land every charger in one shared bucket.
-    const source = config.clientIpHeader
-      ? readSingleHeader(req.rawHeaders, config.clientIpHeader)?.trim()
+    // Fail closed too: a client IP that is missing, duplicated or not a bare
+    // address must never land chargers in a shared bucket, nor in one per
+    // connection.
+    const address = config.clientIpHeader
+      ? readSingleHeader(req.rawHeaders, config.clientIpHeader)
       : req.socket.remoteAddress;
-    if (!source) {
+    const source = address ? clientSource(address) : null;
+    if (source === null) {
       rejections.record("client-ip-header", req.socket.remoteAddress ?? "unknown");
-      refuse(ws, 1008, "Missing or ambiguous client IP");
+      refuse(ws, req.socket, 1008, "Missing or ambiguous client IP");
       return;
     }
 
@@ -120,14 +129,14 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
     // Replace this charger's stale session, if any: some CSMS reject a new
     // connection while the old one is still open, forcing a reconnect loop.
     // Only sessions opened with the same credentials are replaced (see
-    // SessionRegistry). A replacement frees at least one slot, so it is
-    // admitted without checking the limits.
+    // SessionRegistry). The replaced sessions free their slots before the
+    // limits are checked.
     const { replaced, kept } = sessions.evict(key, authHeader);
-    const refused = replaced > 0 ? null : limiter.check(source);
+    const refused = limiter.check(source);
     if (refused) {
       // Nothing else is logged for a refused connection: a flood stays one line.
       rejections.record(refused, source);
-      refuse(ws, 1013, "Too many sessions, try again later");
+      refuse(ws, req.socket, 1013, "Too many sessions, try again later");
       return;
     }
 
@@ -135,7 +144,7 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
       tenantId,
       chargePointId,
       protocol: protocol || "none",
-      ip: source,
+      ip: address,
       primary: redactUrl(route.primary.url),
       secondaries: route.secondaries.map((backend) => redactUrl(backend.url)),
     });
@@ -145,7 +154,7 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
         tenantId,
         chargePointId,
         kept,
-        ip: source,
+        ip: address,
       });
     }
 
@@ -206,11 +215,25 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
 
 /**
  * Close a connection that never becomes a session. Until the client answers
- * the close, ws still parses what it sends, and a malformed frame emits an
- * `error` that would crash the gateway without a listener.
+ * the close, ws still reads what it sends: a malformed frame emits an `error`
+ * that would crash the gateway without a listener, and a large one would be
+ * buffered, bypassing the session limits. So the socket is cut as soon as the
+ * client sends more than a close frame, or does not answer in time.
  */
-function refuse(ws: WebSocket, code: number, reason: string) {
+function refuse(ws: WebSocket, socket: Socket, code: number, reason: string) {
   ws.on("error", (err) => log.debug("refused connection error", { error: err.message }));
+  let received = 0;
+  const onData = (chunk: Buffer) => {
+    received += chunk.length;
+    if (received > REFUSED_MAX_BYTES) ws.terminate();
+  };
+  socket.on("data", onData);
+  const timer = setTimeout(() => ws.terminate(), REFUSED_CLOSE_TIMEOUT_MS);
+  timer.unref();
+  ws.once("close", () => {
+    clearTimeout(timer);
+    socket.off("data", onData);
+  });
   ws.close(code, reason);
 }
 

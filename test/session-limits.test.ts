@@ -1,4 +1,5 @@
 import { once } from "node:events";
+import { type Socket, connect } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import type { Config } from "../src/config";
@@ -201,7 +202,7 @@ describe("a session frees its slot on every exit path", () => {
     await waitFor(() => upstream.heldHandshakes() === 1);
   });
 
-  it("when it is replaced, which needs no free slot", async () => {
+  it("when it is replaced: the replacement takes the freed slot", async () => {
     const auth = "Basic same-charger";
     const upstream = await csms();
     const gw = await gateway(upstream, { maxSessions: 1, maxSessionsPerSource: 1 });
@@ -350,5 +351,143 @@ describe("a refused connection that misbehaves", () => {
     await waitFor(() => upstream.connections()[0]?.ws.readyState === WebSocket.CLOSED);
     await waitForOpen(dial(gw.port, { headers: host }));
     await waitFor(() => upstream.connections().length === 2);
+  });
+});
+
+describe("client sources", () => {
+  const ip = (value: string) => ({ headers: { "x-real-ip": value } });
+
+  it.each([
+    { description: "not an IP address", value: "not-an-ip" },
+    { description: "a list a proxy appended to", value: "203.0.113.9, 198.51.100.7" },
+    { description: "an address with a port", value: "198.51.100.7:5678" },
+  ])("closes with 1008 when the client IP header is $description", async ({ value }) => {
+    const upstream = await csms();
+    const gw = await gateway(upstream, { clientIpHeader: "x-real-ip" });
+
+    expect(await closeCode(dial(gw.port, ip(value)))).toBe(1008);
+    expect(upstreamAttempts(upstream)).toBe(0);
+  });
+
+  it.each([
+    { first: "2001:db8:1:2::1", second: "2001:db8:1:2:ffff::9", shared: "one IPv6 /64" },
+    { first: "198.51.100.7", second: "::ffff:198.51.100.7", shared: "an IPv4 and its mapped form" },
+  ])("counts $shared as one source", async ({ first, second }) => {
+    const upstream = await csms();
+    const gw = await gateway(upstream, { maxSessionsPerSource: 1, clientIpHeader: "x-real-ip" });
+
+    await waitForOpen(dial(gw.port, ip(first)));
+    expect(await closeCode(dial(gw.port, ip(second)))).toBe(TRY_AGAIN_LATER);
+  });
+
+  it("counts other IPv6 /64 blocks apart", async () => {
+    const upstream = await csms();
+    const gw = await gateway(upstream, { maxSessionsPerSource: 1, clientIpHeader: "x-real-ip" });
+
+    await waitForOpen(dial(gw.port, ip("2001:db8:1:2::1")));
+    await waitForOpen(dial(gw.port, ip("2001:db8:1:3::1")));
+    await waitFor(() => upstream.connections().length === 2);
+  });
+});
+
+describe("a replacement is checked against the limits it would exceed", () => {
+  it("is refused when the pending cap is full: replacing an open session frees no pending slot", async () => {
+    const auth = "Basic same-charger";
+    const upstream = await csms({ holdHandshakes: true });
+    const gw = await gateway(upstream, { maxPendingSessions: 1 });
+
+    const charger = dial(gw.port, { auth });
+    await waitForOpen(charger);
+    charger.send("queued");
+    await waitFor(() => upstream.heldHandshakes() === 1);
+    upstream.releaseHandshakes();
+    await waitFor(() => upstream.received().length === 1);
+    await waitForOpen(dial(gw.port));
+    await waitFor(() => upstream.heldHandshakes() === 1);
+
+    const reconnect = dial(gw.port, { auth });
+    expect(await closeCode(reconnect)).toBe(TRY_AGAIN_LATER);
+    expect(upstreamAttempts(upstream)).toBe(2);
+  });
+
+  it("is refused from another source whose bucket is full", async () => {
+    const auth = "Basic same-charger";
+    const upstream = await csms();
+    const gw = await gateway(upstream, { maxSessionsPerSource: 1, clientIpHeader: "x-real-ip" });
+
+    await waitForOpen(dial(gw.port, { auth, headers: { "x-real-ip": "198.51.100.1" } }));
+    await waitForOpen(dial(gw.port, { headers: { "x-real-ip": "198.51.100.2" } }));
+    await waitFor(() => upstream.connections().length === 2);
+
+    const moved = dial(gw.port, { auth, headers: { "x-real-ip": "198.51.100.2" } });
+    expect(await closeCode(moved)).toBe(TRY_AGAIN_LATER);
+    expect(upstream.connections()).toHaveLength(2);
+  });
+});
+
+describe("a refused connection is not kept around", () => {
+  /** Upgrade on a raw socket and resolve once the gateway's close frame arrived. */
+  async function refusedSocket(port: number, path: string): Promise<Socket> {
+    const socket = connect(port, "127.0.0.1");
+    cleanup.push(() => socket.destroy());
+    socket.on("error", () => undefined);
+    await once(socket, "connect");
+    let received = Buffer.alloc(0);
+    socket.on("data", (chunk: Buffer) => (received = Buffer.concat([received, chunk])));
+    socket.write(
+      [
+        `GET ${path} HTTP/1.1`,
+        "Host: tenant-a.ocpp.example.com",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        "Sec-WebSocket-Version: 13",
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+        "",
+        "",
+      ].join("\r\n"),
+    );
+    await waitFor(() => {
+      const end = received.indexOf("\r\n\r\n");
+      return end !== -1 && received[end + 4] === 0x88;
+    });
+    return socket;
+  }
+
+  async function fullTenantGateway() {
+    const upstream = await csms();
+    const gw = await startGateway(
+      { tenants: { "tenant-a": { chargers: { "CP-001": { primary: upstream.url() } } } } },
+      { tenantBaseDomain: "ocpp.example.com", maxSessions: 1 },
+    );
+    cleanup.push(() => gw.close());
+    await waitForOpen(dial(gw.port, { headers: { host: "tenant-a.ocpp.example.com" } }));
+    return gw;
+  }
+
+  /** Resolve true if `socket` is closed within `ms`. */
+  const closedWithin = (socket: Socket, ms: number) =>
+    Promise.race([once(socket, "close").then(() => true), sleep(ms).then(() => false)]);
+
+  it.each([
+    { description: "over a limit", path: "/CP-001" },
+    { description: "unrouted", path: "/CP-999" },
+  ])("is cut as soon as it streams data after the close, when $description", async ({ path }) => {
+    const gw = await fullTenantGateway();
+    const socket = await refusedSocket(gw.port, path);
+
+    // A masked binary frame announcing just under 1 MiB, then most of it.
+    const header = Buffer.from([0x82, 0xfe, 0, 0, 1, 2, 3, 4]);
+    header.writeUInt16BE(0xffff, 2);
+    socket.write(header);
+    socket.write(Buffer.alloc(60_000));
+
+    expect(await closedWithin(socket, 500)).toBe(true);
+  });
+
+  it("is cut shortly after the close when the client never answers it", async () => {
+    const gw = await fullTenantGateway();
+    const socket = await refusedSocket(gw.port, "/CP-001");
+
+    expect(await closedWithin(socket, 2000)).toBe(true);
   });
 });
