@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   v1.1 record, with its tenant, gateway session, source, each destination's
   delivery outcome (queued, submitted, written, failed, dropped) and the CALL
   it answers. Traces expire through a MongoDB TTL index; nothing is written
-  while that index cannot be created. Archiving never
+  while that index cannot be created, and it is recreated before the next
+  write if the collection is dropped while the gateway runs (a collection
+  created beforehand, e.g. capped, is kept). Archiving never
   delays forwarding: writes are batched in the background, bounded in memory,
   and dropped (counted and logged) when MongoDB is unavailable. Disabled by
   default; the MongoDB driver is not even loaded then.

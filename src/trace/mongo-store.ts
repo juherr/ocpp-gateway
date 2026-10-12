@@ -6,8 +6,10 @@ import {
   MongoBulkWriteError,
   MongoClient,
   type MongoClientOptions,
+  MongoServerError,
 } from "mongodb";
 import type { TraceConfig } from "../config";
+import { createLogger } from "../logger";
 import { errorMessage } from "../utils/errors";
 import { maskUserinfo } from "../utils/url";
 import {
@@ -23,6 +25,8 @@ import type { DeliveryUpdate, TraceStore } from "./writer";
 
 export const TRACE_COLLECTION = "ocpp_traces";
 
+const log = createLogger("trace");
+
 /**
  * MongoDB's document limit (16 MiB), minus headroom for the envelope and
  * the delivery updates applied later.
@@ -31,6 +35,7 @@ const MAX_DOCUMENT_BYTES = 16 * 1024 * 1024 - 64 * 1024;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DUPLICATE_KEY = 11000;
+const NAMESPACE_NOT_FOUND = 26;
 
 /**
  * - `expiresAt`: native TTL, MongoDB deletes expired traces in the background
@@ -140,6 +145,16 @@ export function defaultClientOptions(uri: string): MongoClientOptions {
   );
 }
 
+/** Whether `existing` holds `wanted` exactly as `createIndexes` would create it. */
+function includesIndex(existing: IndexDescription[], wanted: IndexDescription): boolean {
+  return existing.some(
+    (index) =>
+      index.name === wanted.name &&
+      JSON.stringify(index.key) === JSON.stringify(wanted.key) &&
+      index.expireAfterSeconds === wanted.expireAfterSeconds,
+  );
+}
+
 const STATUSES = Object.keys(DELIVERY_STATUS_RANK) as DeliveryStatus[];
 /** The statuses a delivery may still move forward from, to reach each status. */
 const EARLIER_STATUSES = Object.fromEntries(
@@ -160,7 +175,8 @@ function masked(err: unknown): Error {
  */
 export class MongoTraceStore implements TraceStore {
   private readonly collection: Collection<MongoTraceDocument>;
-  private indexesReady = false;
+  /** `missing`: the indexes were there, then vanished (the collection was dropped). */
+  private indexState: "unknown" | "ready" | "missing" = "unknown";
 
   static create(
     config: Pick<TraceConfig, "mongodbUri" | "database" | "retentionDays">,
@@ -196,13 +212,54 @@ export class MongoTraceStore implements TraceStore {
     } catch (err) {
       throw masked(err);
     }
-    this.indexesReady = true;
+    this.indexesReady();
+  }
+
+  /** Whoever recreated them, the gateway or the operator. */
+  private indexesReady(): void {
+    if (this.indexState === "missing") {
+      log.info("trace indexes recreated", { collection: this.collection.collectionName });
+    }
+    this.indexState = "ready";
+  }
+
+  /**
+   * Never store a trace that would not expire: before every batch, check the
+   * indexes (TTL included) and create the missing ones, so a collection
+   * dropped while the gateway runs, which the insert would recreate without
+   * any index, gets them back. A collection created by the operator (e.g.
+   * capped) is kept as is. Until they exist, every batch fails, so the writer
+   * retries then drops it. A drop between this check and the insert can
+   * still let one batch in unindexed: the next batch recreates the TTL
+   * index, which then expires those documents too.
+   */
+  private async requireIndexes(): Promise<void> {
+    if (await this.hasIndexes()) {
+      this.indexesReady();
+      return;
+    }
+    if (this.indexState === "ready") {
+      this.indexState = "missing";
+      log.warn("trace indexes missing, recreating them", {
+        collection: this.collection.collectionName,
+      });
+    }
+    await this.ensureIndexes();
+  }
+
+  private async hasIndexes(): Promise<boolean> {
+    let existing: IndexDescription[];
+    try {
+      existing = await this.collection.indexes();
+    } catch (err) {
+      if (err instanceof MongoServerError && err.code === NAMESPACE_NOT_FOUND) return false;
+      throw masked(err);
+    }
+    return TRACE_INDEXES.every((wanted) => includesIndex(existing, wanted));
   }
 
   async insertMany(docs: TraceDocument[]): Promise<{ rejected: { id: string; reason: string }[] }> {
-    // Never store a trace that would not expire: until the indexes (TTL
-    // included) exist, every batch fails, so the writer retries then drops it.
-    if (!this.indexesReady) await this.ensureIndexes();
+    await this.requireIndexes();
 
     const rejected: { id: string; reason: string }[] = [];
     const mongoDocs: MongoTraceDocument[] = [];

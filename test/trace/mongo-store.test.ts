@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { type Db, MongoClient } from "mongodb";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { configureLogger } from "../../src/logger";
 import {
   MongoTraceStore,
   TRACE_COLLECTION,
@@ -184,6 +185,115 @@ describe.skipIf(!MONGODB_URI)("MongoTraceStore against MongoDB", { timeout: 30_0
       await blocked.close();
       await client.db(other).dropDatabase();
     }
+  });
+
+  describe("when the collection is dropped while the gateway runs", () => {
+    let other: Db;
+    let isolated: MongoTraceStore;
+    let lines: string[];
+    const traces = () => other.collection<MongoTraceDocument>(TRACE_COLLECTION);
+    const indexNames = async () => (await traces().indexes()).map((index) => index.name).sort();
+    const logged = (message: string) => lines.filter((line) => line.includes(message)).length;
+
+    beforeEach(async () => {
+      lines = [];
+      configureLogger({
+        logLevel: "info",
+        sink: { stdout: (line) => lines.push(line), stderr: (line) => lines.push(line) },
+      });
+      const name = `${database}_${randomUUID().slice(0, 8)}`;
+      other = client.db(name);
+      isolated = MongoTraceStore.create({
+        mongodbUri: MONGODB_URI!,
+        database: name,
+        retentionDays: 7,
+      });
+      await isolated.insertMany(traceDocs(["charger", BOOT]));
+      await traces().drop();
+    });
+
+    afterEach(async () => {
+      await isolated.close();
+      await other.dropDatabase();
+    });
+
+    it("recreates every index before writing again", async () => {
+      const docs = traceDocs(["charger", BOOT]);
+      await expect(isolated.insertMany(docs)).resolves.toEqual({ rejected: [] });
+
+      expect(await indexNames()).toEqual([
+        "_id_",
+        "expiresAt_ttl",
+        "tenant_chargePoint_receivedAt",
+        "tenant_session_seq",
+      ]);
+      expect(await traces().countDocuments({ _id: docs[0].id })).toBe(1);
+      expect(logged("trace indexes missing")).toBe(1);
+      expect(logged("trace indexes recreated")).toBe(1);
+    });
+
+    it("keeps a collection the operator recreated as capped, adding only its indexes", async () => {
+      await other.createCollection(TRACE_COLLECTION, { capped: true, size: 16 * 1024 * 1024 });
+
+      const docs = traceDocs(["charger", BOOT]);
+      await expect(isolated.insertMany(docs)).resolves.toEqual({ rejected: [] });
+
+      expect(await traces().isCapped()).toBe(true);
+      const ttl = (await traces().indexes()).find((index) => index.name === "expiresAt_ttl");
+      expect(ttl).toMatchObject({ key: { expiresAt: 1 }, expireAfterSeconds: 0 });
+      expect(await traces().countDocuments({ _id: docs[0].id })).toBe(1);
+    });
+
+    it("never writes while a missing index cannot be recreated, and says so once", async () => {
+      // An index named like the TTL one, without expiry: createIndexes fails.
+      await traces().createIndex({ expiresAt: 1 }, { name: "expiresAt_ttl" });
+
+      await expect(isolated.insertMany(traceDocs(["charger", BOOT]))).rejects.toThrow();
+      await expect(isolated.insertMany(traceDocs(["charger", BOOT]))).rejects.toThrow();
+      expect(await traces().countDocuments()).toBe(0);
+      expect(logged("trace indexes missing")).toBe(1);
+    });
+
+    it("reports the indexes back when the operator recreates them", async () => {
+      await traces().createIndex({ expiresAt: 1 }, { name: "expiresAt_ttl" });
+      await expect(isolated.insertMany(traceDocs(["charger", BOOT]))).rejects.toThrow();
+
+      await traces().dropIndex("expiresAt_ttl");
+      await other.collection(TRACE_COLLECTION).createIndexes([
+        { key: { expiresAt: 1 }, name: "expiresAt_ttl", expireAfterSeconds: 0 },
+        {
+          key: { tenantId: 1, chargePointId: 1, receivedAt: 1 },
+          name: "tenant_chargePoint_receivedAt",
+        },
+        { key: { tenantId: 1, sessionId: 1, seq: 1 }, name: "tenant_session_seq" },
+      ]);
+      await expect(isolated.insertMany(traceDocs(["charger", BOOT]))).resolves.toEqual({
+        rejected: [],
+      });
+      expect(logged("trace indexes recreated")).toBe(1);
+    });
+
+    it("does not take an index named like the TTL one, but without expiry, for it", async () => {
+      await traces().createIndex(
+        { tenantId: 1, chargePointId: 1, receivedAt: 1 },
+        { name: "tenant_chargePoint_receivedAt" },
+      );
+      await traces().createIndex(
+        { tenantId: 1, sessionId: 1, seq: 1 },
+        { name: "tenant_session_seq" },
+      );
+      await traces().createIndex({ expiresAt: 1 }, { name: "expiresAt_ttl" });
+
+      await expect(isolated.insertMany(traceDocs(["charger", BOOT]))).rejects.toThrow();
+      expect(await traces().countDocuments()).toBe(0);
+    });
+
+    it("logs nothing more once the indexes are back", async () => {
+      await isolated.insertMany(traceDocs(["charger", BOOT]));
+      await isolated.insertMany(traceDocs(["charger", BOOT]));
+      await isolated.insertMany(traceDocs(["charger", BOOT]));
+      expect(logged("trace indexes")).toBe(2); // one "missing", one "recreated"
+    });
   });
 
   it("creates the TTL index and the query indexes", async () => {
