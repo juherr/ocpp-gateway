@@ -2,6 +2,7 @@ import { type IncomingMessage, type ServerResponse, createServer } from "node:ht
 import { type WebSocket, WebSocketServer } from "ws";
 import type { Config } from "./config";
 import { ChargerConnection } from "./connection";
+import { RejectionLog, SessionLimiter } from "./limits";
 import { createLogger } from "./logger";
 import type { RouteStore } from "./routes";
 import { type SessionKey, SessionRegistry } from "./sessions";
@@ -44,6 +45,8 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
       lookupHostname: (hostname) => routes.findTenantByHostname(hostname),
     });
   const sessions = new SessionRegistry<ChargerConnection>();
+  const limiter = new SessionLimiter(config);
+  const rejections = new RejectionLog(log);
 
   const server = createServer((req, res) => {
     if (handleHttp(req, res)) return;
@@ -69,7 +72,7 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
       log.warn("rejected connection: no charge point ID in path", {
         url: req.url,
       });
-      ws.close(1002, "Charge point ID required in URL path");
+      refuse(ws, 1002, "Charge point ID required in URL path");
       return;
     }
 
@@ -83,7 +86,7 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
         chargePointId,
         ip: req.socket.remoteAddress,
       });
-      ws.close(1008, "Missing or ambiguous host");
+      refuse(ws, 1008, "Missing or ambiguous host");
       return;
     }
     const tenantId = tenants.resolve(host);
@@ -95,7 +98,18 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
         chargePointId,
         ip: req.socket.remoteAddress,
       });
-      ws.close(1008, "No route for this charge point");
+      refuse(ws, 1008, "No route for this charge point");
+      return;
+    }
+
+    // Fail closed too: a missing, duplicated or empty client IP must never
+    // land every charger in one shared bucket.
+    const source = config.clientIpHeader
+      ? readSingleHeader(req.rawHeaders, config.clientIpHeader)?.trim()
+      : req.socket.remoteAddress;
+    if (!source) {
+      rejections.record("client-ip-header", req.socket.remoteAddress ?? "unknown");
+      refuse(ws, 1008, "Missing or ambiguous client IP");
       return;
     }
 
@@ -103,30 +117,39 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
     const protocol = ws.protocol;
     const authHeader = req.headers.authorization;
 
+    // Replace this charger's stale session, if any: some CSMS reject a new
+    // connection while the old one is still open, forcing a reconnect loop.
+    // Only sessions opened with the same credentials are replaced (see
+    // SessionRegistry). A replacement frees at least one slot, so it is
+    // admitted without checking the limits.
+    const { replaced, kept } = sessions.evict(key, authHeader);
+    const refused = replaced > 0 ? null : limiter.check(source);
+    if (refused) {
+      // Nothing else is logged for a refused connection: a flood stays one line.
+      rejections.record(refused, source);
+      refuse(ws, 1013, "Too many sessions, try again later");
+      return;
+    }
+
     log.info("charger connected", {
       tenantId,
       chargePointId,
       protocol: protocol || "none",
-      ip: req.socket.remoteAddress,
+      ip: source,
       primary: redactUrl(route.primary.url),
       secondaries: route.secondaries.map((backend) => redactUrl(backend.url)),
     });
-
-    // Replace this charger's stale session, if any: some CSMS reject a new
-    // connection while the old one is still open, forcing a reconnect loop.
-    // Only sessions opened with the same credentials are replaced (see
-    // SessionRegistry).
-    const { replaced, kept } = sessions.evict(key, authHeader);
     if (replaced > 0) log.info("replaced existing session", { tenantId, chargePointId, replaced });
     if (kept > 0) {
       log.warn("existing session kept: new connection has different credentials", {
         tenantId,
         chargePointId,
         kept,
-        ip: req.socket.remoteAddress,
+        ip: source,
       });
     }
 
+    const lease = limiter.acquire(source);
     const conn = new ChargerConnection(
       ws,
       key,
@@ -136,8 +159,10 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
       config.maxMessageBytes,
       () => {
         sessions.remove(key, conn);
+        lease.release();
       },
       options.traceSink,
+      () => lease.primaryOpened(),
     );
     sessions.add(key, authHeader, conn);
   });
@@ -154,6 +179,10 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
       tenantBaseDomain: config.tenantBaseDomain,
       tenantHostHeader: config.tenantHostHeader ?? "host",
       maxMessageBytes: config.maxMessageBytes,
+      maxSessions: config.maxSessions,
+      maxPendingSessions: config.maxPendingSessions,
+      maxSessionsPerSource: config.maxSessionsPerSource,
+      clientIpHeader: config.clientIpHeader ?? "none (socket address)",
       traceArchiving: options.traceSink !== undefined,
     });
   });
@@ -167,11 +196,22 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
     new Promise<void>((resolve) => {
       for (const ws of wss.clients) ws.close(1001, "Server shutting down");
       sessions.teardownAll();
+      rejections.stop();
       wss.close();
       server.close(() => resolve());
     });
 
   return { server, close };
+}
+
+/**
+ * Close a connection that never becomes a session. Until the client answers
+ * the close, ws still parses what it sends, and a malformed frame emits an
+ * `error` that would crash the gateway without a listener.
+ */
+function refuse(ws: WebSocket, code: number, reason: string) {
+  ws.on("error", (err) => log.debug("refused connection error", { error: err.message }));
+  ws.close(code, reason);
 }
 
 /** Handle plain-HTTP endpoints. Returns true if the request was served. */

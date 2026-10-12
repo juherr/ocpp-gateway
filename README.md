@@ -222,6 +222,10 @@ All configuration is done through environment variables:
 | `TENANT_BASE_DOMAIN`           | No       | —               | Tenants are subdomains of this domain (`acme.<domain>` → `acme`). See [Multi-tenant routing](#multi-tenant-routing) |
 | `TENANT_HOST_HEADER`           | No       | — (`Host`)      | Header holding the dialled hostname, set by a **trusted** reverse proxy (e.g. `x-forwarded-host`) |
 | `MAX_MESSAGE_BYTES`            | No       | `1048576`       | Largest WebSocket message (bytes, `1`–`2147483647`) accepted from a charger or a CSMS; a bigger one closes that connection with `1009`. See [Message size limit](#message-size-limit). At most `15728640` (15 MiB) with trace archiving |
+| `MAX_SESSIONS`                 | No       | — (unlimited)   | Live charger sessions; more are closed with `1013`. See [Session limits](#session-limits) |
+| `MAX_PENDING_SESSIONS`         | No       | — (unlimited)   | Sessions whose primary CSMS link is still connecting; more are closed with `1013` |
+| `MAX_SESSIONS_PER_SOURCE`      | No       | — (unlimited)   | Live charger sessions per client source (IP address); more are closed with `1013` |
+| `CLIENT_IP_HEADER`             | No       | — (socket address) | Header holding the client's IP address, set by a **trusted** reverse proxy (e.g. `cf-connecting-ip`, `x-real-ip`). A connection without exactly one non-empty value is closed with `1008` |
 | `TRACE_ENABLED`                | No       | `false`         | Archive every OCPP frame in MongoDB. See [Trace archiving](#trace-archiving-optional) |
 | `TRACE_MONGODB_URI`            | With `TRACE_ENABLED` | —   | `mongodb://` or `mongodb+srv://` connection string. May carry credentials; never logged |
 | `TRACE_MONGODB_DATABASE`       | No       | `ocpp_gateway`  | Database holding the `ocpp_traces` collection                                       |
@@ -235,6 +239,20 @@ All configuration is done through environment variables:
 A message over the limit closes the link it arrived on with `1009` and is never forwarded nor queued: a charger is disconnected, a primary ends the session (the charger is closed with `1011`), a secondary reconnects without affecting the charger or the primary.
 
 Messages waiting for an upstream link (the primary while it connects, a secondary while it reconnects) are buffered per link up to 100 messages and 1 MiB or `MAX_MESSAGE_BYTES`, whichever is larger — oldest dropped first — so raising `MAX_MESSAGE_BYTES` does not multiply the memory a session can hold by 100.
+
+### Session limits
+
+By default the gateway accepts any number of charger sessions. Each routed session dials its primary CSMS at once, and until that link opens (up to its 10 s handshake timeout) it buffers what the charger sends, up to 1 MiB or `MAX_MESSAGE_BYTES`. Anyone who knows one routed chargeBoxId — anyone at all with a `default` route — can therefore open sessions until the gateway runs out of memory: presenting different credentials each time keeps every session alive, since only a reconnection with the **same** `Authorization` replaces a session. Three optional limits bound this; each is unlimited when unset:
+
+- `MAX_SESSIONS` caps live sessions, whatever their source;
+- `MAX_PENDING_SESSIONS` caps sessions whose primary link is still connecting — where the memory goes;
+- `MAX_SESSIONS_PER_SOURCE` caps live sessions per client source.
+
+A connection over a limit is accepted then closed with **`1013` (Try Again Later)** before any upstream connection is attempted or any buffer allocated. A session counts from the moment it is admitted until it ends, however it ends; it stops counting as pending as soon as its primary link opens. Limits are checked after routing: an unrouted chargeBoxId is still closed with `1008` and never counts, so a flood of unrouted ids cannot lock a source out of its chargers. A reconnection that replaces a session (same `Authorization`) is admitted without checking the limits, since it frees the slot it takes — except per source: a charger reconnecting from a new address may take its new source one over `MAX_SESSIONS_PER_SOURCE`.
+
+The source is the socket's remote address. Behind a reverse proxy that address is the proxy's, which would put the whole fleet in one bucket: set `CLIENT_IP_HEADER` to the header the proxy puts the client's address in (e.g. `cf-connecting-ip`, `x-real-ip`), and make sure the proxy overwrites any value a client sends. Once set, that header is required: a connection where it is missing, duplicated or empty is closed with `1008`, never counted under a shared key.
+
+Rejections are logged as `warn` lines with their `reason` (`global`, `pending`, `per-source`, `client-ip-header`) and `source`, throttled so a flood cannot flood the logs: the first rejection of a source for a reason is logged right away, the following ones are summed into one `connections rejected` line per minute.
 
 ## Charger setup
 
