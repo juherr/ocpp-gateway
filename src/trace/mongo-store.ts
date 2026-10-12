@@ -145,13 +145,30 @@ export function defaultClientOptions(uri: string): MongoClientOptions {
   );
 }
 
-/** Whether `existing` holds `wanted` exactly as `createIndexes` would create it. */
+/**
+ * Index options that do not change which documents an index covers: `v`
+ * (format), `ns` (older servers), `collation` (inherited from a collection
+ * default; dates and numbers ignore it). Any other one, such as
+ * `partialFilterExpression`, `sparse` or `hidden`, may leave traces that never
+ * expire.
+ */
+const NEUTRAL_INDEX_OPTIONS = new Set([
+  "v",
+  "ns",
+  "key",
+  "name",
+  "expireAfterSeconds",
+  "collation",
+]);
+
+/** Whether `existing` holds `wanted`, with no option narrowing what it covers. */
 function includesIndex(existing: IndexDescription[], wanted: IndexDescription): boolean {
   return existing.some(
     (index) =>
       index.name === wanted.name &&
       JSON.stringify(index.key) === JSON.stringify(wanted.key) &&
-      index.expireAfterSeconds === wanted.expireAfterSeconds,
+      index.expireAfterSeconds === wanted.expireAfterSeconds &&
+      Object.keys(index).every((option) => NEUTRAL_INDEX_OPTIONS.has(option)),
   );
 }
 
@@ -206,34 +223,18 @@ export class MongoTraceStore implements TraceStore {
       .collection<MongoTraceDocument>(collectionName);
   }
 
-  async ensureIndexes(): Promise<void> {
-    try {
-      await this.collection.createIndexes(TRACE_INDEXES);
-    } catch (err) {
-      throw masked(err);
-    }
-    this.indexesReady();
-  }
-
-  /** Whoever recreated them, the gateway or the operator. */
-  private indexesReady(): void {
-    if (this.indexState === "missing") {
-      log.info("trace indexes recreated", { collection: this.collection.collectionName });
-    }
-    this.indexState = "ready";
-  }
-
   /**
-   * Never store a trace that would not expire: before every batch, check the
-   * indexes (TTL included) and create the missing ones, so a collection
-   * dropped while the gateway runs, which the insert would recreate without
-   * any index, gets them back. A collection created by the operator (e.g.
-   * capped) is kept as is. Until they exist, every batch fails, so the writer
-   * retries then drops it. A drop between this check and the insert can
-   * still let one batch in unindexed: the next batch recreates the TTL
-   * index, which then expires those documents too.
+   * Run before every batch, so that traces get a TTL even when the collection
+   * is dropped while the gateway runs (the insert would recreate it without
+   * any index): check the indexes, TTL included, and create the missing ones.
+   * A collection created by the operator (e.g. capped) is kept as is. Until
+   * then every batch fails, so the writer retries then drops it.
+   *
+   * Not airtight: a drop between this check and the insert lets that batch
+   * into a collection the insert recreates, uncapped and without indexes. The
+   * next batch recreates the TTL index, which also expires those documents.
    */
-  private async requireIndexes(): Promise<void> {
+  async ensureIndexes(): Promise<void> {
     if (await this.hasIndexes()) {
       this.indexesReady();
       return;
@@ -244,7 +245,26 @@ export class MongoTraceStore implements TraceStore {
         collection: this.collection.collectionName,
       });
     }
-    await this.ensureIndexes();
+    try {
+      await this.collection.createIndexes(TRACE_INDEXES);
+    } catch (err) {
+      throw masked(err);
+    }
+    // Defensive: createIndexes accepts an existing index it deems equivalent.
+    if (!(await this.hasIndexes())) {
+      throw new Error(
+        `indexes of ${this.collection.collectionName} have unexpected options; drop them to let the gateway recreate them`,
+      );
+    }
+    this.indexesReady();
+  }
+
+  /** Whoever recreated them, the gateway or the operator. */
+  private indexesReady(): void {
+    if (this.indexState === "missing") {
+      log.info("trace indexes recreated", { collection: this.collection.collectionName });
+    }
+    this.indexState = "ready";
   }
 
   private async hasIndexes(): Promise<boolean> {
@@ -259,7 +279,7 @@ export class MongoTraceStore implements TraceStore {
   }
 
   async insertMany(docs: TraceDocument[]): Promise<{ rejected: { id: string; reason: string }[] }> {
-    await this.requireIndexes();
+    await this.ensureIndexes();
 
     const rejected: { id: string; reason: string }[] = [];
     const mongoDocs: MongoTraceDocument[] = [];

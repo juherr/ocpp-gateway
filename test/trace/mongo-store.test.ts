@@ -194,7 +194,14 @@ describe.skipIf(!MONGODB_URI)("MongoTraceStore against MongoDB", { timeout: 30_0
     const traces = () => other.collection<MongoTraceDocument>(TRACE_COLLECTION);
     const indexNames = async () => (await traces().indexes()).map((index) => index.name).sort();
     const logged = (message: string) => lines.filter((line) => line.includes(message)).length;
-
+    const createQueryIndexes = () =>
+      traces().createIndexes([
+        {
+          key: { tenantId: 1, chargePointId: 1, receivedAt: 1 },
+          name: "tenant_chargePoint_receivedAt",
+        },
+        { key: { tenantId: 1, sessionId: 1, seq: 1 }, name: "tenant_session_seq" },
+      ]);
     beforeEach(async () => {
       lines = [];
       configureLogger({
@@ -213,6 +220,7 @@ describe.skipIf(!MONGODB_URI)("MongoTraceStore against MongoDB", { timeout: 30_0
     });
 
     afterEach(async () => {
+      configureLogger({ logLevel: "info", sink: { stdout: () => {}, stderr: () => {} } });
       await isolated.close();
       await other.dropDatabase();
     });
@@ -274,15 +282,23 @@ describe.skipIf(!MONGODB_URI)("MongoTraceStore against MongoDB", { timeout: 30_0
     });
 
     it("does not take an index named like the TTL one, but without expiry, for it", async () => {
-      await traces().createIndex(
-        { tenantId: 1, chargePointId: 1, receivedAt: 1 },
-        { name: "tenant_chargePoint_receivedAt" },
-      );
-      await traces().createIndex(
-        { tenantId: 1, sessionId: 1, seq: 1 },
-        { name: "tenant_session_seq" },
-      );
+      await createQueryIndexes();
       await traces().createIndex({ expiresAt: 1 }, { name: "expiresAt_ttl" });
+
+      await expect(isolated.insertMany(traceDocs(["charger", BOOT]))).rejects.toThrow();
+      expect(await traces().countDocuments()).toBe(0);
+    });
+
+    it("does not take a partial TTL index, which leaves some traces without expiry, for it", async () => {
+      await createQueryIndexes();
+      await traces().createIndex(
+        { expiresAt: 1 },
+        {
+          name: "expiresAt_ttl",
+          expireAfterSeconds: 0,
+          partialFilterExpression: { tenantId: "operator-b" },
+        },
+      );
 
       await expect(isolated.insertMany(traceDocs(["charger", BOOT]))).rejects.toThrow();
       expect(await traces().countDocuments()).toBe(0);
