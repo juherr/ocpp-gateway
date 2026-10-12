@@ -500,13 +500,12 @@ describe("trace selection per tenant", () => {
     ]);
   });
 
-  it("decides at connect time: a reload applies to new connections only", async () => {
-    const [primary] = await csmsFor(answering("primary"));
-    const sink = new MemoryTraceSink();
+  /** A gateway whose routes file stays on disk, so the test can rewrite and reload it. */
+  async function startReloadable(table: object, sink: MemoryTraceSink) {
     const dir = mkdtempSync(join(tmpdir(), "ocpp-gateway-test-"));
     cleanups.push(() => rmSync(dir, { recursive: true }));
     const routesFile = join(dir, "routes.json");
-    writeFileSync(routesFile, JSON.stringify(scoped(primary)));
+    writeFileSync(routesFile, JSON.stringify(table));
     const store = RouteStore.load(routesFile, { requireBackendIds: true });
     const gateway = startProxy(
       {
@@ -523,12 +522,22 @@ describe("trace selection per tenant", () => {
     cleanups.push(() => gateway.close());
     await once(gateway.server, "listening");
     const { port } = gateway.server.address() as AddressInfo;
+    const reload = (next: object) => {
+      writeFileSync(routesFile, JSON.stringify(next));
+      store.reload();
+    };
+    return { port, store, reload };
+  }
+
+  it("decides at connect time: excluding a tenant applies to new connections only", async () => {
+    const [primary] = await csmsFor(answering("primary"));
+    const sink = new MemoryTraceSink();
+    const { port, store, reload } = await startReloadable(scoped(primary), sink);
 
     const before = await exchange(port, "demo");
     await waitFor(() => sink.docs.length === 2);
 
-    writeFileSync(routesFile, JSON.stringify(scoped(primary, {}, { trace: false })));
-    store.reload();
+    reload(scoped(primary, {}, { trace: false }));
     expect(store.isTraced("demo")).toBe(false);
 
     // The open session keeps archiving…
@@ -538,6 +547,69 @@ describe("trace selection per tenant", () => {
     await exchange(port, "demo", "m3");
     const ids = sink.traces().map((t) => t.messageId);
     expect(ids).toEqual(["m1", "m1", "m2", "m2"]);
+  });
+
+  it("decides at connect time: re-including a tenant applies to new connections only", async () => {
+    const logs: Record<string, unknown>[] = [];
+    const capture = (line: string) => logs.push(JSON.parse(line) as Record<string, unknown>);
+    configureLogger({ logLevel: "info", sink: { stdout: capture, stderr: capture } });
+    const [primary] = await csmsFor(answering("primary"));
+    const sink = new MemoryTraceSink();
+    const { port, store, reload } = await startReloadable(
+      scoped(primary, { trace: false }, { trace: false }),
+      sink,
+    );
+
+    const before = await exchange(port, "demo");
+    reload(scoped(primary, { trace: false }));
+    expect(store.isTraced("demo")).toBe(true);
+    expect(logs.filter((l) => l.msg === "routes reloaded").map((l) => l.untraced)).toEqual([
+      [null],
+    ]);
+
+    // The open session stays excluded…
+    before.charger.send(boot("m2"));
+    await waitFor(() => before.received.length === 2);
+    expect(sink.docs).toEqual([]);
+    // …a new one is archived.
+    await exchange(port, "demo", "m3");
+    await waitFor(() => sink.docs.length === 2);
+    expect(tenantsOf(sink)).toEqual(["demo"]);
+    expect(sink.traces().map((t) => t.messageId)).toEqual(["m3", "m3"]);
+  });
+
+  it("never runs the session tracer for an excluded tenant, primary nor secondary", async () => {
+    const [primary, mirror] = await csmsFor(answering("primary"), answering("mirror"));
+    const sink = new MemoryTraceSink();
+    const route = {
+      default: {
+        primary: { id: "csms-main", url: primary.url() },
+        secondaries: [{ id: "mirror-1", url: mirror.url() }],
+      },
+    };
+    const { port } = await start(
+      { tenants: { "tenant-a": route, demo: { ...route, trace: false } } },
+      { traceSink: sink },
+      TENANTS,
+    );
+    const traced = [
+      vi.spyOn(SessionTracer.prototype, "fromCharger"),
+      vi.spyOn(SessionTracer.prototype, "fromPrimary"),
+      vi.spyOn(SessionTracer.prototype, "fromSecondary"),
+    ];
+    cleanups.push(() => vi.restoreAllMocks());
+    const calls = () => traced.map((spy) => spy.mock.calls.length);
+
+    const demo = await exchange(port, "demo");
+    // The mirror received the CALL and answered it: the secondary path ran too.
+    await waitFor(() => mirror.received().length === 1);
+    await sleep(50);
+    expect(demo.received).toHaveLength(1);
+    expect(calls()).toEqual([0, 0, 0]);
+
+    // The spies do see a traced tenant.
+    await exchange(port, "tenant-a");
+    await waitFor(() => calls().every((n) => n === 1));
   });
 });
 
