@@ -202,6 +202,14 @@ describe.skipIf(!MONGODB_URI)("MongoTraceStore against MongoDB", { timeout: 30_0
         },
         { key: { tenantId: 1, sessionId: 1, seq: 1 }, name: "tenant_session_seq" },
       ]);
+    const cappedStore = () =>
+      MongoTraceStore.create({
+        mongodbUri: MONGODB_URI!,
+        database: other.databaseName,
+        retentionDays: 7,
+        requireCapped: true,
+      });
+
     beforeEach(async () => {
       lines = [];
       configureLogger({
@@ -304,6 +312,38 @@ describe.skipIf(!MONGODB_URI)("MongoTraceStore against MongoDB", { timeout: 30_0
       expect(await traces().countDocuments()).toBe(0);
     });
 
+    it("never creates the collection when a capped one is required, then uses the operator's", async () => {
+      const capped = cappedStore();
+      try {
+        await expect(capped.insertMany(traceDocs(["charger", BOOT]))).rejects.toThrow(
+          /not capped|missing/,
+        );
+        expect(await other.listCollections({ name: TRACE_COLLECTION }).toArray()).toEqual([]);
+
+        await other.createCollection(TRACE_COLLECTION, { capped: true, size: 16 * 1024 * 1024 });
+        const docs = traceDocs(["charger", BOOT]);
+        await expect(capped.insertMany(docs)).resolves.toEqual({ rejected: [] });
+
+        expect(await traces().isCapped()).toBe(true);
+        expect(await indexNames()).toContain("expiresAt_ttl");
+        expect(await traces().countDocuments({ _id: docs[0].id })).toBe(1);
+      } finally {
+        await capped.close();
+      }
+    });
+
+    it("never writes into an uncapped collection when a capped one is required", async () => {
+      // What a drop racing a write leaves behind: recreated by the insert, uncapped.
+      await other.createCollection(TRACE_COLLECTION);
+      const capped = cappedStore();
+      try {
+        await expect(capped.insertMany(traceDocs(["charger", BOOT]))).rejects.toThrow(/not capped/);
+        expect(await traces().countDocuments()).toBe(0);
+      } finally {
+        await capped.close();
+      }
+    });
+
     it("logs nothing more once the indexes are back", async () => {
       await isolated.insertMany(traceDocs(["charger", BOOT]));
       await isolated.insertMany(traceDocs(["charger", BOOT]));
@@ -374,7 +414,7 @@ describe.skipIf(!MONGODB_URI)("MongoTraceStore against MongoDB", { timeout: 30_0
       validator: { chargePointId: { $ne: "REJECT-ME" } },
       validationAction: "error",
     });
-    const validated = new MongoTraceStore(client, database, 7, name);
+    const validated = new MongoTraceStore(client, database, 7, { collectionName: name });
     const [good] = traceDocs(["charger", BOOT]);
     const bad = { ...traceDocs(["charger", BOOT])[0], chargePointId: "REJECT-ME" };
 

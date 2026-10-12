@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   delays forwarding: writes are batched in the background, bounded in memory,
   and dropped (counted and logged) when MongoDB is unavailable. Disabled by
   default; the MongoDB driver is not even loaded then.
+- `TRACE_REQUIRE_CAPPED` (off by default): only write traces into an existing
+  capped `ocpp_traces` collection, created by the operator, and never create
+  it, so that a dropped collection stops archiving instead of coming back
+  uncapped. Required wherever that cap is what bounds the archive's disk usage.
 - Backends accept a stable `id` (`{ "id": "csms-a", "url": "…" }`), naming the
   logical CSMS in traces instead of its URL. Required on every backend when
   trace archiving is enabled; validated whenever present (format, unique within
