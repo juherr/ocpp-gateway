@@ -237,6 +237,14 @@ All configuration is done through environment variables:
 | `SENTRY_DSN`                   | No       | — (disabled)    | Report crashes and internal anomalies to Sentry. See [Error reporting](#error-reporting-optional) |
 | `SENTRY_ENVIRONMENT`           | No       | —               | Sentry environment (e.g. `production`, `staging`)                                   |
 | `SENTRY_RELEASE`               | No       | `ocpp-gateway@<version>` | Sentry release                                                             |
+| `VIEWER_ENABLED`               | No       | `false`         | Start the live trace viewer on its own port. See [Live trace viewer](#live-trace-viewer-optional) |
+| `VIEWER_USERNAME`              | With `VIEWER_ENABLED` | —  | HTTP Basic username (no colon). Never logged                                       |
+| `VIEWER_PASSWORD`              | With `VIEWER_ENABLED` | —  | HTTP Basic password, taken verbatim. Never logged                                  |
+| `VIEWER_HOST`                  | No       | `127.0.0.1`     | Address or hostname the viewer listens on                                           |
+| `VIEWER_PORT`                  | No       | `9001`          | Port the viewer listens on; must differ from `PORT`                                 |
+| `VIEWER_MAX_BUFFERED_MESSAGES` | No       | `1000`          | Messages a browser keeps (`1`–`100000`); older ones are discarded                   |
+| `VIEWER_MAX_CLIENTS`           | No       | `5`             | Browsers streaming at once (`1`–`1000`)                                             |
+| `VIEWER_CLIENT_IP_HEADER`      | No       | — (socket address) | Header holding the viewer client's IP address, set by a **trusted** reverse proxy that overwrites it. A request without exactly one bare IP address gets `400` |
 
 ### Message size limit
 
@@ -320,6 +328,7 @@ Reported:
 - startup failures once the configuration is read: an unreadable or invalid routes file, a trace archive that cannot start;
 - a routes file hot reload that fails (the previous table is kept);
 - an error of the WebSocket server, e.g. the port is already in use (the gateway then exits with code 1);
+- an error of the live trace viewer's server (the same way), or a viewer request that fails;
 - trace archiving outages: the MongoDB store becoming unavailable, and traces lost because of it — once per outage, however many batches are dropped;
 - a full trace queue dropping new traces, or a full delivery-update queue dropping delivery outcomes — once per saturation episode, which only ends once MongoDB takes writes again (a long outage raises no new alert).
 
@@ -468,6 +477,29 @@ Traces contain whole OCPP payloads: RFID tags (`idTag`), transaction and meter d
 - Binary WebSocket frames are archived as the text the gateway forwards (decoded as UTF-8), flagged `binary: true`; one that is not valid UTF-8 (decoded with replacement characters) is stored as a raw frame with `reason: "lossy-binary"`, since `raw` would not be the bytes received.
 - A CALL to the secondaries is correlated per secondary, but the gateway does not track the secondaries' own CALLs (the charger never sees them).
 - The [Cloudflare deployment](deploy/cloudflare/) does not pass `TRACE_*` variables to the gateway.
+
+## Live trace viewer (optional)
+
+With `VIEWER_ENABLED=true`, the gateway starts a second, read-only HTTP server for operators, apart from the OCPP port: by default on `127.0.0.1:9001`. It does not need MongoDB and does not enable trace archiving, and charger traffic is forwarded exactly as without it. This release serves a placeholder page; the viewer UI and the live stream of OCPP frames follow.
+
+```bash
+VIEWER_ENABLED=true \
+VIEWER_USERNAME=operator \
+VIEWER_PASSWORD='a long random password' \
+ROUTES_FILE=./routes.json npm start
+# then open http://127.0.0.1:9001/
+```
+
+The gateway refuses to start when the viewer is enabled without a username or a password, when `VIEWER_PORT` equals `PORT`, or when the viewer port cannot be bound. See [Configuration](#configuration) for every `VIEWER_*` variable.
+
+**Security.**
+
+- Every route — the page, its assets, `GET /api/config`, even an unknown path — requires HTTP Basic authentication; there is no anonymous access. Credentials are compared in constant time and never logged.
+- A source (IP address) with 10 wrong or malformed attempts within a minute gets `429 Too Many Requests` with `Retry-After` until that minute is over, even with the right credentials. Failed attempts are logged once per source and minute, without the credentials tried.
+- Responses carry `Cache-Control: no-store`, a strict Content Security Policy (no inline or third-party script), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`.
+- Basic authentication sends the password with every request: the viewer listens on loopback by default, and should only be exposed remotely behind an **HTTPS** reverse proxy. Set `VIEWER_CLIENT_IP_HEADER` only when that proxy overwrites the header with the client's address; otherwise a client could pick its own source and evade the attempt limit. Without it, every attempt through the proxy counts as the proxy's address.
+- In a container, set `VIEWER_HOST=0.0.0.0` and publish the port on loopback only, e.g. `127.0.0.1:9001:9001` in a Compose `ports` list.
+- The viewer will show whole OCPP payloads (RFID tags, transaction data…, see [Data sensitivity](#data-sensitivity)): give its credentials to trusted operators only.
 
 ## Development
 
