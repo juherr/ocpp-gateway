@@ -312,6 +312,7 @@ describe("gateway process with the live trace viewer", () => {
       expect(page.status).toBe(200);
       const html = await page.text();
       expect(html).toContain("OCPP Gateway — Live Traces");
+      expect(html).toContain("Waiting for OCPP traffic…");
       expect(html).toContain('<script src="/viewer.js" defer></script>');
       expect(html).toContain('<link rel="stylesheet" href="/viewer.css" />');
 
@@ -320,7 +321,8 @@ describe("gateway process with the live trace viewer", () => {
       expect(script.status).toBe(200);
       expect(script.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
       const js = await script.text();
-      expect(js).toContain("Live Traces");
+      expect(js).toContain("/events");
+      expect(js).toContain("Copy raw frame");
       expect(js).not.toMatch(/\brequire\(|sourceMappingURL/);
       const style = await fetch(`${url}viewer.css`, { headers: { authorization } });
       expect(style.status).toBe(200);
