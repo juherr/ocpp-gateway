@@ -143,8 +143,10 @@ export class LiveTraceHub implements TraceSink {
   insert(doc: TraceDocument): boolean {
     if (this.clients.size === 0) return false;
     try {
-      const json = JSON.stringify(doc);
-      this.broadcast(Buffer.from(`id: ${this.nextEventId++}\nevent: trace\ndata: ${json}\n\n`));
+      // The id is only taken once the event is built: a failure skips none.
+      const event = sseEvent("trace", doc, this.nextEventId);
+      this.nextEventId++;
+      this.broadcast(event);
       return true;
     } catch (err) {
       this.reportFailure(err);
@@ -238,6 +240,11 @@ export class LiveTraceHub implements TraceSink {
 
   private broadcast(event: Buffer): void {
     for (const client of this.clients) {
+      // Over the soft bound, nothing fits: drop before building a gap event.
+      if (client.stream.writableLength >= this.softLimitBytes) {
+        this.drop(client);
+        continue;
+      }
       const gap = client.pendingGap > 0 ? this.gapEvent(client) : undefined;
       if (!this.fits(client, event.length + (gap?.length ?? 0))) {
         this.drop(client);
