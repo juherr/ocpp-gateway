@@ -163,10 +163,11 @@ function rebuild(): void {
 
 /**
  * A listed message whose delivery changed may now pass the delivery filter,
- * or no longer: its row is inserted in reception order, or removed.
+ * or no longer: its row is inserted in reception order, or removed. Paused,
+ * rows only change state: they wait for the resume to come or go.
  */
 function applyRefilter(): void {
-  if (refilter.size === 0) return;
+  if (refilter.size === 0 || store.paused) return;
   const listed = store.entries();
   for (const entry of refilter.values()) {
     if (store.get(entry.doc.id) !== entry || store.isPending(entry)) continue;
