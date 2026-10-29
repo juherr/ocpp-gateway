@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { sleep } from "./helpers";
+import { boot, connectWhenOpen, makeCsms, sleep } from "./helpers";
 
 /**
  * The production bundle as a process, with Sentry enabled against a local
@@ -314,6 +314,63 @@ describe("gateway process with the live trace viewer", () => {
 
       proc.kill("SIGTERM");
       expect(await exited).toBe(0);
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    "streams a charger's frames to /events, and ends the stream on shutdown",
+    async () => {
+      const csms = makeCsms("primary");
+      await once(csms.wss, "listening");
+      try {
+        const port = await freePort();
+        const viewerPort = await freePort();
+        const { proc, exited, logged } = startGateway(
+          {
+            PORT: String(port),
+            VIEWER_ENABLED: "true",
+            VIEWER_USERNAME: USERNAME,
+            VIEWER_PASSWORD: PASSWORD,
+            VIEWER_PORT: String(viewerPort),
+          },
+          undefined,
+          { default: { primary: { id: "csms", url: csms.url() } } },
+        );
+        await logged("viewer listening");
+        await logged("proxy listening");
+
+        const res = await fetch(`http://127.0.0.1:${viewerPort}/events`, {
+          headers: { authorization },
+        });
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
+        const reader = res.body!.getReader();
+        const decoder = new TextDecoder();
+        let text = "";
+        const readUntil = async (marker: string) => {
+          while (!text.includes(marker)) {
+            const { done, value } = await reader.read();
+            if (done) return false;
+            text += decoder.decode(value, { stream: true });
+          }
+          return true;
+        };
+        expect(await readUntil("event: hello")).toBe(true);
+
+        const charger = await connectWhenOpen(`ws://127.0.0.1:${port}/CP-001`, "ocpp1.6");
+        charger.send(boot("m1"));
+        expect(await readUntil('"action":"BootNotification"')).toBe(true);
+        charger.terminate();
+
+        proc.kill("SIGTERM");
+        // The stream ends with the process, which exits cleanly.
+        expect(await readUntil("never sent")).toBe(false);
+        await logged("live viewer closed");
+        expect(await exited).toBe(0);
+      } finally {
+        csms.close();
+      }
     },
     TIMEOUT_MS,
   );
