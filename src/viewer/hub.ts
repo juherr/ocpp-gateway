@@ -7,17 +7,26 @@ const log = createLogger("viewer");
 
 /**
  * Bytes a client may have waiting to be sent (`writableLength`) before its
- * events are dropped, as a multiple of `MAX_MESSAGE_BYTES`. An event is only
- * written below this bound, so any single frame still reaches a client that
- * keeps up. A trace event carries the frame twice (`raw`, escaped, and the
- * parsed payload): about 2 to 3 times the frame's size.
+ * events are dropped, as a multiple of `MAX_MESSAGE_BYTES`.
  */
 export const SOFT_LIMIT_MESSAGES = 4;
-/** Past this many more frames' worth of waiting bytes, the client is ended. */
-export const HARD_LIMIT_EXTRA_MESSAGES = 4;
-/** Events dropped in a row before a slow client is ended. */
+/**
+ * Room above the soft bound, in frames' worth of bytes: an event is only
+ * written if it keeps the client's buffer within `soft + this`, otherwise it
+ * is dropped like any other (never ending the client for it). A trace event
+ * carries the frame twice, `raw` escaped and the parsed payload: usually 2
+ * to 3 times its size, up to about 6 times for a frame of control
+ * characters (each escaped as `\u00XX`). 7 frames' worth keeps any event
+ * of a frame within `MAX_MESSAGE_BYTES` deliverable to a client under the
+ * soft bound.
+ */
+export const HARD_LIMIT_EXTRA_MESSAGES = 7;
+/** Events dropped in a row at which a slow client is ended. */
 export const MAX_DROPPED_EVENTS = 1000;
-/** How long a client may keep dropping events before it is ended. */
+/**
+ * How long a client may keep dropping events before it is ended: checked on
+ * every drop, and on the heartbeat while nothing is sent.
+ */
 export const MAX_DROPPING_MS = 30_000;
 /** Interval of the `: ping` comment that keeps idle streams (and proxies) alive. */
 export const HEARTBEAT_MS = 15_000;
@@ -229,11 +238,12 @@ export class LiveTraceHub implements TraceSink {
 
   private broadcast(event: Buffer): void {
     for (const client of this.clients) {
-      if (client.stream.writableLength >= this.softLimitBytes) {
+      const gap = client.pendingGap > 0 ? this.gapEvent(client) : undefined;
+      if (!this.fits(client, event.length + (gap?.length ?? 0))) {
         this.drop(client);
         continue;
       }
-      if (client.pendingGap > 0 && !this.flushGap(client)) continue;
+      if (gap && !this.writeGap(client, gap)) continue;
       if (this.write(client, event)) {
         client.sent++;
         this.totals.sent++;
@@ -241,17 +251,37 @@ export class LiveTraceHub implements TraceSink {
     }
   }
 
+  /**
+   * Whether `bytes` more may be written to the client: it is under the soft
+   * bound, and they keep it within the hard one. So a client lagging behind
+   * loses an event too large for its room, and is never ended for it.
+   */
+  private fits(client: Client, bytes: number): boolean {
+    const buffered = client.stream.writableLength;
+    return buffered < this.softLimitBytes && buffered + bytes <= this.hardLimitBytes;
+  }
+
   private drop(client: Client): void {
+    const now = Date.now();
     client.pendingGap++;
     client.droppedTotal++;
     this.totals.dropped++;
-    client.droppingSince ??= Date.now();
-    if (client.pendingGap > this.maxDroppedEvents) this.endSlow(client);
+    client.droppingSince ??= now;
+    if (
+      client.pendingGap >= this.maxDroppedEvents ||
+      now - client.droppingSince > this.maxDroppingMs
+    ) {
+      this.endSlow(client);
+    }
+  }
+
+  private gapEvent(client: Client): Buffer {
+    return sseEvent("gap", { dropped: client.pendingGap });
   }
 
   /** Tells a client that caught up how many events it missed. */
-  private flushGap(client: Client): boolean {
-    const ok = this.write(client, sseEvent("gap", { dropped: client.pendingGap }));
+  private writeGap(client: Client, gap: Buffer): boolean {
+    const ok = this.write(client, gap);
     if (ok) {
       client.pendingGap = 0;
       client.droppingSince = undefined;
@@ -259,7 +289,10 @@ export class LiveTraceHub implements TraceSink {
     return ok;
   }
 
-  /** Writes to one client; false once that client is gone. Never throws. */
+  /**
+   * Writes to one client, whose room the caller checked; false once that
+   * client is gone. Never throws.
+   */
   private write(client: Client, chunk: Buffer): boolean {
     const { stream } = client;
     if (stream.destroyed || stream.writableEnded) {
@@ -275,10 +308,6 @@ export class LiveTraceHub implements TraceSink {
     }
     const buffered = stream.writableLength;
     if (buffered > this.totals.peakBufferedBytes) this.totals.peakBufferedBytes = buffered;
-    if (buffered > this.hardLimitBytes) {
-      this.endSlow(client);
-      return false;
-    }
     return true;
   }
 
@@ -304,11 +333,11 @@ export class LiveTraceHub implements TraceSink {
   private tick(): void {
     const now = Date.now();
     for (const client of this.clients) {
-      const behind = client.stream.writableLength >= this.softLimitBytes;
       if (client.pendingGap > 0) {
-        if (!behind) this.flushGap(client);
+        const gap = this.gapEvent(client);
+        if (this.fits(client, gap.length)) this.writeGap(client, gap);
         else if (now - (client.droppingSince ?? now) > this.maxDroppingMs) this.endSlow(client);
-      } else if (!behind) {
+      } else if (this.fits(client, PING.length)) {
         this.write(client, PING);
       }
     }

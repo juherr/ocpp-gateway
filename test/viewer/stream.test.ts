@@ -402,21 +402,27 @@ describe("live stream under load", () => {
     const { ws, received } = await charger(gatewayPort);
     // Past the primary's connect queue, which would drop the oldest frames.
     await waitFor(() => primary.connected());
+    // Send in batches until the hub ends the client, whatever the kernel's
+    // socket buffers absorb first (they differ between macOS and Linux).
     const filler = "x".repeat(2048);
-    const frames = 2000;
-    for (let i = 0; i < frames; i++) {
-      ws.send(JSON.stringify([2, `d${i}`, "DataTransfer", { vendorId: "X", data: filler }]));
+    const batch = 200;
+    const maxFrames = 40_000;
+    let frames = 0;
+    while (hub.stats().endedSlow === 0) {
+      if (frames >= maxFrames)
+        throw new Error(`client never ended: ${JSON.stringify(hub.stats())}`);
+      for (let i = 0; i < batch; i++, frames++) {
+        ws.send(JSON.stringify([2, `d${frames}`, "DataTransfer", { vendorId: "X", data: filler }]));
+      }
+      await waitFor(() => received.length === frames, 10_000);
     }
-    await waitFor(() => received.length === frames, 10_000);
-    await waitFor(() => hub.stats().endedSlow === 1, 5000);
 
     const stats = hub.stats();
     expect(stats.clients).toBe(0);
-    expect(stats.dropped).toBeGreaterThan(200);
-    // One trace event of this flow is under 8 KiB.
-    expect(stats.peakBufferedBytes).toBeLessThanOrEqual(hard + 8 * 1024);
+    expect(stats.dropped).toBeGreaterThanOrEqual(200);
+    expect(stats.peakBufferedBytes).toBeLessThanOrEqual(hard);
     expect(primary.received()).toHaveLength(frames);
-  }, 20_000);
+  }, 30_000);
 
   it("survives frequent reconnects and still streams to the last client", async () => {
     const [primary] = await csmsFor(answering("primary"));
@@ -425,6 +431,8 @@ describe("live stream under load", () => {
     });
     const { ws, received } = await charger(gatewayPort);
     for (let i = 0; i < 25; i++) {
+      // The previous stream's close may still be on its way to the hub.
+      await waitFor(() => hub.stats().clients <= 1);
       const stream = await openStream(viewerPort);
       expect(stream.res.statusCode).toBe(200);
       ws.send(JSON.stringify([2, `h${i}`, "Heartbeat", {}]));

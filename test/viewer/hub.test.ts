@@ -303,33 +303,92 @@ describe("LiveTraceHub", () => {
       expect(client.destroyed).toBe(false);
     });
 
-    it("ends a client whose buffer goes over the hard bound", () => {
-      const hub = makeHub({ softLimitBytes: SOFT, hardLimitBytes: 2 * SOFT });
+    it("drops, without ending the client, an event that would take its buffer over the hard bound", () => {
+      const HARD = 4 * SOFT;
+      const hub = makeHub({ softLimitBytes: SOFT, hardLimitBytes: HARD });
       const { client } = connected(hub);
       client.held = true;
-      hub.insert(doc("t1", "x".repeat(3 * SOFT)));
+      client.writableLength = SOFT - 1; // lagging, still under the soft bound
+      const big = doc("t1", "x".repeat(HARD - SOFT + 1)); // larger than hard − soft
 
-      expect(client.destroyed).toBe(true);
-      expect(hub.active()).toBe(false);
-      expect(hub.stats()).toMatchObject({ clients: 0, endedSlow: 1 });
+      expect(hub.insert(big)).toBe(true);
+
+      expect(client.named("trace")).toEqual([]);
+      expect(client.writableLength).toBeLessThanOrEqual(HARD);
+      expect(client.destroyed).toBe(false);
+      expect(hub.stats()).toMatchObject({ clients: 1, dropped: 1, endedSlow: 0 });
+
+      client.drain();
       hub.insert(doc("t2"));
-      expect(client.named("trace")).toHaveLength(1);
+      expect(client.events().slice(1)).toEqual([
+        { event: "gap", id: undefined, data: { dropped: 1 } },
+        expect.objectContaining({ event: "trace", id: "2" }),
+      ]);
     });
 
-    it("ends a client after too many dropped events", () => {
+    it("by default, still delivers a frame of control characters to a client just under the soft bound", () => {
+      const maxMessageBytes = 1024;
+      const hub = makeHub({ maxMessageBytes });
+      const { client } = connected(hub);
+      client.held = true;
+      client.writableLength = 4 * maxMessageBytes - 1;
+
+      hub.insert(doc("t1", "\u0001".repeat(maxMessageBytes))); // ~6× once escaped
+
+      expect(client.named("trace")).toHaveLength(1);
+      expect(hub.stats().dropped).toBe(0);
+    });
+
+    it("never takes a buffer over the hard bound, small events, gaps and pings included", () => {
+      vi.useFakeTimers();
+      const HARD = 2 * SOFT;
+      const hub = makeHub({ softLimitBytes: SOFT, hardLimitBytes: HARD, heartbeatMs: 1000 });
+      const { client } = connected(hub);
+      client.held = true;
+      for (let i = 0; i < 50; i++) {
+        hub.insert(doc(`t${i}`, "x".repeat(i * 7)));
+        vi.advanceTimersByTime(250);
+        expect(client.writableLength).toBeLessThanOrEqual(HARD);
+      }
+      expect(hub.stats().peakBufferedBytes).toBeLessThanOrEqual(HARD);
+    });
+
+    it("ends a client at the maxDroppedEvents-th event dropped in a row", () => {
       const hub = makeHub({ softLimitBytes: SOFT, hardLimitBytes: 100_000, maxDroppedEvents: 5 });
       const { client } = connected(hub);
       const { client: healthy } = connected(hub);
       client.held = true;
       client.writableLength = SOFT;
 
-      for (let i = 0; i < 5; i++) hub.insert(doc(`t${i}`));
+      for (let i = 0; i < 4; i++) hub.insert(doc(`t${i}`));
       expect(client.destroyed).toBe(false);
-      hub.insert(doc("t5"));
+      hub.insert(doc("t4"));
 
       expect(client.destroyed).toBe(true);
       expect(healthy.destroyed).toBe(false);
-      expect(hub.stats()).toMatchObject({ clients: 1, dropped: 6, endedSlow: 1 });
+      expect(hub.stats()).toMatchObject({ clients: 1, dropped: 5, endedSlow: 1 });
+    });
+
+    it("ends a client dropping for longer than maxDroppingMs on its next drop, before any heartbeat", () => {
+      vi.useFakeTimers();
+      const hub = makeHub({
+        softLimitBytes: SOFT,
+        hardLimitBytes: 100_000,
+        maxDroppingMs: 30_000,
+        heartbeatMs: 3_600_000,
+      });
+      const { client } = connected(hub);
+      client.held = true;
+      client.writableLength = SOFT;
+      hub.insert(doc("t1"));
+      vi.advanceTimersByTime(30_000);
+      hub.insert(doc("t2"));
+      expect(client.destroyed).toBe(false);
+
+      vi.advanceTimersByTime(1);
+      hub.insert(doc("t3"));
+      expect(client.destroyed).toBe(true);
+      expect(hub.stats().endedSlow).toBe(1);
     });
 
     it("ends a client that keeps dropping for too long, checked on the heartbeat", () => {
