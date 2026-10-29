@@ -21,6 +21,7 @@
     },
     "demo": {
       "trace": false,
+      "viewer": false,
       "default": { "primary": { "id": "csms-demo", "url": "wss://demo-csms.example.com/ocpp" } }
     }
   }

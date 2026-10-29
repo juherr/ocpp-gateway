@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { TraceDocument } from "../../src/trace/record";
 import { SessionTracer, type SessionTracerContext } from "../../src/trace/session-tracer";
+import type { TraceSink } from "../../src/trace/writer";
 import {
   type SpecRecord,
   buildConsumerView,
@@ -8,7 +10,7 @@ import {
   rawFidelityErrors,
   schemaErrors,
 } from "./conformance";
-import { MemoryTraceSink } from "./memory-sink";
+import { MemoryTraceSink, SwitchableTraceSink } from "./memory-sink";
 
 const T0 = new Date("2026-10-11T10:00:00.000Z");
 
@@ -353,6 +355,197 @@ describe("SessionTracer", () => {
     });
   });
 });
+
+describe("SessionTracer with several sinks", () => {
+  function setupMany(...sinks: TraceSink[]) {
+    let now = T0.getTime();
+    let ids = 0;
+    const tracer = new SessionTracer(
+      {
+        sessionId: "session-1",
+        tenantId: "operator-a",
+        chargePointId: "CP-001",
+        protocol: "ocpp1.6",
+        primaryId: "csms-main",
+        secondaryIds: ["mirror-1"],
+      },
+      sinks,
+      { now: () => new Date(now++), newId: () => `trace-${++ids}` },
+    );
+    return tracer;
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("inserts the same document into every sink, each with its own deliveries", () => {
+    const archive = new MemoryTraceSink();
+    const live = new SwitchableTraceSink();
+    const inserted: TraceDocument[] = [];
+    const spies = [archive, live].map((sink) =>
+      vi.spyOn(sink, "insert").mockImplementation(function (this: MemoryTraceSink, doc) {
+        inserted.push(doc);
+        return MemoryTraceSink.prototype.insert.call(this, doc);
+      }),
+    );
+    const tracer = setupMany(archive, live);
+    tracer.fromCharger(BOOT).commit();
+
+    expect(spies.map((spy) => spy.mock.calls.length)).toEqual([1, 1]);
+    expect(live.docs).toEqual(archive.docs);
+    expect(archive.docs).toHaveLength(1);
+    // Built once: the record is shared, the deliveries array is not.
+    const [a, b] = inserted;
+    expect(traceOf(a)).toBe(traceOf(b));
+    expect(a.deliveries).not.toBe(b.deliveries);
+  });
+
+  it("sends delivery updates only to the sinks that accepted the document", () => {
+    const archive = new MemoryTraceSink();
+    const live = new MemoryTraceSink();
+    archive.accept = false;
+    const tracer = setupMany(archive, live);
+    const frame = tracer.fromCharger(BOOT);
+    const primary = frame.delivery(0);
+    primary.submitted();
+    frame.commit();
+    primary.settled(null);
+
+    expect(archive.docs).toEqual([]);
+    expect(archive.updates).toEqual([]);
+    expect(live.updates.map((u) => [u.id, u.index, u.delivery.status])).toEqual([
+      ["trace-1", 0, "written"],
+    ]);
+  });
+
+  it("correlates a response when any sink accepted its CALL", () => {
+    const archive = new MemoryTraceSink();
+    const live = new MemoryTraceSink();
+    archive.accept = false;
+    const tracer = setupMany(archive, live);
+    tracer.fromCharger(BOOT).commit();
+    archive.accept = true;
+    tracer.fromPrimary('[3,"m1",{"status":"Accepted"}]').commit();
+
+    // The archived response points to a CALL only the live sink holds.
+    expect(archive.traces()[0].meta.gateway.correlation).toEqual({
+      callTraceId: "trace-1",
+      action: "BootNotification",
+    });
+    expect(live.traces()[1].meta.gateway.correlation).toEqual({
+      callTraceId: "trace-1",
+      action: "BootNotification",
+    });
+  });
+
+  it("never correlates a response when every sink refused its CALL", () => {
+    const archive = new MemoryTraceSink();
+    const live = new MemoryTraceSink();
+    archive.accept = false;
+    live.accept = false;
+    const tracer = setupMany(archive, live);
+    tracer.fromCharger(BOOT).commit();
+    archive.accept = true;
+    live.accept = true;
+    tracer.fromPrimary('[3,"m1",{"status":"Accepted"}]').commit();
+
+    expect(archive.traces()[0].meta.gateway.correlation).toBeUndefined();
+    expect(live.traces()[0].meta.gateway.correlation).toBeUndefined();
+  });
+
+  it("does no decoding work while no sink is active", () => {
+    const live = new SwitchableTraceSink();
+    live.on = false;
+    const insert = vi.spyOn(live, "insert");
+    const update = vi.spyOn(live, "updateDelivery");
+    const build = vi.spyOn(SessionTracer.prototype, "build");
+    const tracer = setupMany(live);
+
+    const frame = tracer.fromCharger(BOOT);
+    frame.delivery(0).submitted();
+    frame.commit();
+    frame.delivery(0).settled(null);
+    tracer.fromPrimary('[3,"m1",{"status":"Accepted"}]').commit();
+    tracer.fromSecondary("mirror-1", '[3,"m1",{}]');
+
+    expect(live.activeCalls).toBe(3);
+    expect(build).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("only feeds the active sinks", () => {
+    const archive = new MemoryTraceSink();
+    const live = new SwitchableTraceSink();
+    live.on = false;
+    const tracer = setupMany(archive, live);
+    const frame = tracer.fromCharger(BOOT);
+    frame.delivery(0).submitted();
+    frame.commit();
+    frame.delivery(0).settled(null);
+
+    expect(archive.docs).toHaveLength(1);
+    expect(archive.updates).toHaveLength(1);
+    expect(live.docs).toEqual([]);
+    expect(live.updates).toEqual([]);
+  });
+
+  it("decides at commit: a sink switched on before commit gets the frame", () => {
+    const live = new SwitchableTraceSink();
+    live.on = false;
+    const tracer = setupMany(live);
+    const frame = tracer.fromCharger(BOOT);
+    live.on = true;
+    frame.commit();
+    expect(live.traces().map((t) => t.messageId)).toEqual(["m1"]);
+  });
+
+  it("feeds a sink switched on mid-session from its next frame on", () => {
+    const live = new SwitchableTraceSink();
+    live.on = false;
+    const tracer = setupMany(live);
+    tracer.fromCharger(BOOT).commit();
+    live.on = true;
+    // The CALL was never decoded: its response is recorded, uncorrelated.
+    tracer.fromPrimary('[3,"m1",{"status":"Accepted"}]').commit();
+    tracer.fromCharger('[2,"m2","Heartbeat",{}]').commit();
+    tracer.fromPrimary('[3,"m2",{"currentTime":"2026-10-11T10:00:00Z"}]').commit();
+
+    expect(live.traces().map((t) => t.messageId)).toEqual(["m1", "m2", "m2"]);
+    expect(live.traces()[0].meta.gateway.correlation).toBeUndefined();
+    expect(live.traces()[2].meta.gateway.correlation).toEqual({
+      callTraceId: live.traces()[1].meta.gateway.traceId,
+      action: "Heartbeat",
+    });
+    // Frames keep their reception order, skipped ones included.
+    expect(live.traces().map((t) => t.meta.gateway.seq)).toEqual([2, 3, 4]);
+  });
+
+  it("forgets pending CALLs while no sink is active, never miscorrelating a reused id", () => {
+    const live = new SwitchableTraceSink();
+    const tracer = setupMany(live);
+    tracer.fromCharger(BOOT).commit();
+    live.on = false;
+    // Unseen: the response to the first m1, then a new CALL reusing m1.
+    tracer.fromPrimary('[3,"m1",{"status":"Accepted"}]').commit();
+    tracer.fromCharger(BOOT).commit();
+    live.on = true;
+    tracer.fromPrimary('[3,"m1",{"status":"Accepted"}]').commit();
+
+    expect(live.traces().map((t) => t.messageType)).toEqual(["CALL", "CALLRESULT"]);
+    expect(live.traces()[1].meta.gateway.correlation).toBeUndefined();
+  });
+
+  it("does nothing at all without a sink", () => {
+    const build = vi.spyOn(SessionTracer.prototype, "build");
+    const tracer = setupMany();
+    tracer.fromCharger(BOOT).commit();
+    expect(build).not.toHaveBeenCalled();
+  });
+});
+
+const traceOf = (doc: TraceDocument) => (doc.kind === "trace" ? doc.trace : undefined);
 
 describe("SessionTracer against the reference fixtures", () => {
   for (const fixture of loadFixtures()) {

@@ -19,6 +19,15 @@ import {
 } from "./record";
 import type { TraceSink } from "./writer";
 
+/** One sink, or several fed with the same documents (e.g. archive and live viewer). */
+export type TraceSinks = TraceSink | readonly TraceSink[];
+
+/** The sinks as a list; `"insert" in` tells a single sink from an array. */
+export function toSinkList(sinks: TraceSinks | undefined): readonly TraceSink[] {
+  if (sinks === undefined) return [];
+  return "insert" in sinks ? [sinks] : sinks;
+}
+
 /** What a tracer knows about its session; fixed for the session's lifetime. */
 export interface SessionTracerContext {
   sessionId: string;
@@ -98,12 +107,15 @@ export class SessionTracer {
   private readonly primaryRouting: FrameRouting;
   private readonly secondaryRoutings = new Map<string, FrameRouting>();
   private seq = 0;
+  private readonly sinks: readonly TraceSink[];
 
   constructor(
     private readonly context: SessionTracerContext,
-    private readonly sink: TraceSink,
+    /** Where documents go: one sink, or several fed with the same documents. */
+    sinks: TraceSinks,
     private readonly deps: SessionTracerDeps = { now: () => new Date(), newId: randomUUID },
   ) {
+    this.sinks = toSinkList(sinks);
     const { chargePointId, primaryId, secondaryIds } = context;
     this.ocppVersion = ocppVersionOf(context.protocol);
     this.chargerRouting = {
@@ -172,11 +184,40 @@ export class SessionTracer {
     return this.deps.now();
   }
 
-  /** @internal Shared by the frames of this session. */
-  insert(doc: TraceDocument, routing: FrameRouting): boolean {
-    const accepted = this.sink.insert(doc);
-    // Only a CALL the sink accepted may be pointed to by a response.
-    if (accepted && doc.kind === "trace" && doc.trace.messageType === "CALL") {
+  /**
+   * @internal A frame was committed while no sink was active: it is never
+   * decoded, so the pending CALLs can no longer be trusted. Only reachable
+   * through a sink with `active()`.
+   */
+  idle(): void {
+    this.correlator.clear();
+  }
+
+  /** @internal The sinks that want this frame, checked once per frame on commit. */
+  activeSinks(): TraceSink[] {
+    return this.sinks.filter((sink) => sink.active?.() ?? true);
+  }
+
+  /**
+   * @internal Shared by the frames of this session. Inserts `doc` into each
+   * of `sinks` (each gets its own document and deliveries array, the record
+   * is shared) and returns those that accepted it.
+   */
+  insert(doc: TraceDocument, routing: FrameRouting, sinks: readonly TraceSink[]): TraceSink[] {
+    // Copied before any insert: a sink owns its document from then on.
+    const docs = sinks.map((_, i) =>
+      i === 0 ? doc : { ...doc, deliveries: doc.deliveries.slice() },
+    );
+    const accepted = sinks.filter((sink, i) => sink.insert(docs[i]));
+    // Only a CALL some sink accepted may be pointed to by a response. With
+    // several sinks, a response stored by one may thus point to a CALL only
+    // another one accepted (the archive may have dropped it under load).
+    // While no sink is active, frames are not decoded at all, and every
+    // pending CALL is forgotten (see idle()): an unseen response could have
+    // consumed it, so it must not answer a later response reusing its id. A
+    // CALL committed just before the sinks go idle thus loses its
+    // correlation, which is honest: a frame went unseen in between.
+    if (accepted.length > 0 && doc.kind === "trace" && doc.trace.messageType === "CALL") {
       const { messageId, action } = doc.trace;
       for (const conversation of routing.callConversations) {
         this.correlator.call(conversation, routing.direction, messageId, {
@@ -189,11 +230,14 @@ export class SessionTracer {
   }
 
   /** @internal Shared by the frames of this session. */
-  updateDelivery(id: string, index: number, delivery: Delivery): void {
-    this.sink.updateDelivery(id, index, delivery);
+  updateDelivery(sinks: readonly TraceSink[], id: string, index: number, delivery: Delivery): void {
+    for (const sink of sinks) sink.updateDelivery(id, index, delivery);
   }
 
-  /** @internal The document of a received frame; called once per frame, in reception order. */
+  /**
+   * @internal The document of a received frame; called at most once per
+   * frame (never while no sink is active), in reception order.
+   */
   build({ id, seq, receivedAt, raw, encoding, routing }: Reception): TraceDocument {
     const { tenantId, sessionId, chargePointId } = this.context;
     const gateway: GatewayMeta = {
@@ -269,7 +313,8 @@ class PendingFrame implements ReceivedFrame {
   private reception: Reception | null;
   private readonly states: (Delivery | undefined)[];
   private committed = false;
-  private accepted = false;
+  /** The sinks that accepted this frame's document: the ones its updates go to. */
+  private acceptedBy: readonly TraceSink[] = [];
 
   constructor(
     private readonly tracer: SessionTracer,
@@ -294,10 +339,16 @@ class PendingFrame implements ReceivedFrame {
     });
     const reception = this.reception!;
     this.reception = null;
+    // Nobody wants it (e.g. a live viewer with no client): skip all decoding.
+    const sinks = this.tracer.activeSinks();
+    if (sinks.length === 0) {
+      this.tracer.idle();
+      return;
+    }
     const doc = this.tracer.build(reception);
     // A copy: the sink owns the document, the states stay ours.
     doc.deliveries = this.states.slice() as Delivery[];
-    this.accepted = this.tracer.insert(doc, reception.routing);
+    this.acceptedBy = this.tracer.insert(doc, reception.routing, sinks);
   }
 
   update(index: number, status: DeliveryStatus, reason?: string): void {
@@ -313,7 +364,9 @@ class PendingFrame implements ReceivedFrame {
       updatedAt: this.tracer.now(),
     };
     this.states[index] = delivery;
-    if (this.committed && this.accepted) this.tracer.updateDelivery(this.id, index, delivery);
+    if (this.committed && this.acceptedBy.length > 0) {
+      this.tracer.updateDelivery(this.acceptedBy, this.id, index, delivery);
+    }
   }
 }
 

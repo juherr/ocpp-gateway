@@ -25,6 +25,13 @@ export interface ProxyOptions {
   tenants?: TenantResolver;
   /** Where to archive every OCPP frame. Unset: archiving disabled. */
   traceSink?: TraceSink;
+  /**
+   * Where to stream every OCPP frame live (the viewer), for the scopes it
+   * shows. Attached to every viewed session for its whole life: while it is
+   * not `active()`, frames are not inserted into it, and not decoded at all
+   * while no sink of the session is active. Unset: no live viewer.
+   */
+  liveSink?: TraceSink;
 }
 
 /**
@@ -44,6 +51,9 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
   // Traces name each CSMS by its backend id: every route must have them.
   if (options.traceSink && !routes.requiresBackendIds) {
     throw new Error("trace archiving needs a route store loaded with requireBackendIds");
+  }
+  if (options.liveSink && !routes.requiresBackendIds) {
+    throw new Error("the live viewer needs a route store loaded with requireBackendIds");
   }
   const tenants =
     options.tenants ??
@@ -130,6 +140,8 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
     // Decided once per session, like its route: a reload only affects new connections.
     const traceSink =
       options.traceSink && routes.isTraced(tenantId) ? options.traceSink : undefined;
+    const liveSink = options.liveSink && routes.isViewed(tenantId) ? options.liveSink : undefined;
+    const sinks = [traceSink, liveSink].filter((sink) => sink !== undefined);
 
     // Replace this charger's stale session, if any: some CSMS reject a new
     // connection while the old one is still open, forcing a reconnect loop.
@@ -158,6 +170,7 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
       primary: redactUrl(route.primary.url),
       secondaries: route.secondaries.map((backend) => redactUrl(backend.url)),
       ...(options.traceSink && { traced: traceSink !== undefined }),
+      ...(options.liveSink && { viewed: liveSink !== undefined }),
     });
     if (replaced > 0) log.info("replaced existing session", { tenantId, chargePointId, replaced });
     if (kept > 0) {
@@ -181,7 +194,7 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
         sessions.remove(key, conn);
         lease.release();
       },
-      traceSink,
+      sinks,
       () => lease.primaryOpened(),
     );
     leases.set(conn, lease);
@@ -206,6 +219,8 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
       clientIpHeader: config.clientIpHeader ?? "none (socket address)",
       traceArchiving: options.traceSink !== undefined,
       ...(options.traceSink && { untraced: routes.untracedScopes() }),
+      liveViewer: options.liveSink !== undefined,
+      ...(options.liveSink && { unviewed: routes.unviewedScopes() }),
     });
   });
 

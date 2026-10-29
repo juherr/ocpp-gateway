@@ -3,8 +3,13 @@ import WebSocket from "ws";
 import { createLogger } from "./logger";
 import { type Route, buildTargetUrl } from "./routes";
 import { type SessionKey, formatSessionKey } from "./sessions";
-import { type DeliveryTracker, type FrameEncoding, SessionTracer } from "./trace/session-tracer";
-import type { TraceSink } from "./trace/writer";
+import {
+  type DeliveryTracker,
+  type FrameEncoding,
+  SessionTracer,
+  type TraceSinks,
+  toSinkList,
+} from "./trace/session-tracer";
 import { errorMessage } from "./utils/errors";
 import { OCPP_SUBPROTOCOLS } from "./types";
 import { BoundedQueue } from "./utils/bounded-queue";
@@ -30,10 +35,10 @@ import { forwardPing, forwardPong, isUtf8Data, rawDataToString } from "./utils/w
  *   messages while reconnecting so brief blips don't lose data.
  * - Every queue is bounded by count and by total bytes, dropping the
  *   oldest messages first.
- * - With a trace sink, every received frame is archived once, at ingress,
- *   and each destination's delivery outcome is tracked (queued, submitted,
- *   written, failed, dropped) on that same record. Without one, forwarding
- *   is exactly as if tracing did not exist.
+ * - With trace sinks (the archive, a live viewer), every received frame is
+ *   captured once, at ingress, and each destination's delivery outcome is
+ *   tracked (queued, submitted, written, failed, dropped) on that same
+ *   record. Without one, forwarding is exactly as if tracing did not exist.
  */
 
 export const SECONDARY_RECONNECT_DELAY_MS = 10_000;
@@ -84,7 +89,8 @@ export class ChargerConnection {
     private readonly authHeader: string | undefined,
     private readonly maxPayload: number,
     private readonly onEnd: () => void,
-    private readonly traceSink?: TraceSink,
+    /** Where this session's frames are traced (archive, live viewer); none: not traced. */
+    private readonly traceSinks?: TraceSinks,
     /** Called once the primary link opens: the session is no longer pending. */
     private readonly onPrimaryOpen?: () => void,
   ) {
@@ -115,7 +121,8 @@ export class ChargerConnection {
     for (const backend of this.route.secondaries) {
       const url = buildTargetUrl(backend, this.key.chargeBoxId);
       const state: SecondaryState = {
-        // Only read when archiving, which requires backend ids (see startProxy).
+        // Only read when tracing (archive or live viewer), which requires
+        // backend ids (see startProxy).
         id: backend.id!,
         url,
         logUrl: redactUrl(url),
@@ -136,7 +143,8 @@ export class ChargerConnection {
     }
 
     // Destinations are the secondaries actually set up, in forwarding order.
-    if (this.traceSink) {
+    const sinks = toSinkList(this.traceSinks);
+    if (sinks.length > 0) {
       this.tracer = new SessionTracer(
         {
           sessionId: this.sessionId,
@@ -146,7 +154,7 @@ export class ChargerConnection {
           primaryId: this.route.primary.id!,
           secondaryIds: this.secondaries.map((sec) => sec.id),
         },
-        this.traceSink,
+        sinks,
       );
     }
 

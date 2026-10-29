@@ -6,11 +6,28 @@ const log = createLogger("trace");
 /**
  * Where sessions hand their trace documents. Called on the forwarding path,
  * so implementations must return immediately and never throw.
+ *
+ * A session may feed several sinks (the archive, a live viewer). Each gets
+ * its own document object and `deliveries` array, which it owns; the record
+ * inside (`trace` or `frame`) is shared between them and must never be
+ * mutated. A sink that does not keep the document (e.g. one that streams it)
+ * must serialise what it needs during `insert`, never retain the object.
  */
 export interface TraceSink {
+  /**
+   * Whether the sink wants documents right now; absent means always. Called
+   * once per frame on the forwarding path: it must be cheap and never throw.
+   * While no sink of a session is active, its frames are neither decoded nor
+   * correlated, and its pending CALLs are forgotten.
+   */
+  active?(): boolean;
   /** Take ownership of `doc`; false when it was not accepted (it will never be stored). */
   insert(doc: TraceDocument): boolean;
-  /** Record a newer delivery state for `deliveries[index]` of an accepted document. */
+  /**
+   * Record a newer delivery state for `deliveries[index]` of an accepted
+   * document. Keeps coming for a document once accepted, even after
+   * `active()` turned false: ignore it cheaply when no longer wanted.
+   */
   updateDelivery(id: string, index: number, delivery: Delivery): void;
 }
 

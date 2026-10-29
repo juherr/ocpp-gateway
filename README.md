@@ -116,6 +116,7 @@ Add a `tenants` map to the routes file (see [`routes.multi-tenant.example.json`]
 - `hostnames` (optional) lists custom domains that select the tenant, e.g. `ocpp.customer-b.example`. A hostname may belong to one tenant only.
 - With `tenants`, the global `default` becomes optional.
 - `trace: false` (optional) keeps the tenant's frames out of the trace archive; see [Choosing what is archived](#choosing-what-is-archived).
+- `viewer: false` (optional) keeps the tenant's frames out of the live trace viewer (upcoming), independently of `trace`. Default `true`; like `trace`, at the root it covers the global scope only, never the tenants. Backend ids are required in every scope once the viewer is enabled.
 
 **Tenant resolution**, from the connection's hostname (lowercased, port and trailing dot ignored):
 

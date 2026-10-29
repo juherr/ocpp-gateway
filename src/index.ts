@@ -49,10 +49,12 @@ async function main() {
     return exit(1);
   };
 
+  // Traces name each CSMS by its backend id, never by its URL: every trace
+  // consumer (today the archive) needs them in every route, on every reload.
+  const requireBackendIds = config.trace !== undefined;
   let routes: RouteStore;
   try {
-    // Trace archiving names each CSMS by its backend id, never by its URL.
-    routes = RouteStore.load(config.routesFile, { requireBackendIds: config.trace !== undefined });
+    routes = RouteStore.load(config.routesFile, { requireBackendIds });
   } catch (err) {
     return fail("failed to load routes file", err, { path: config.routesFile });
   }
