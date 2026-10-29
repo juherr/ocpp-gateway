@@ -514,7 +514,7 @@ Open `http://127.0.0.1:9001/` (or wherever the viewer is exposed) and enter the 
 
 `GET /events` (authenticated like every route) is a [Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html) stream of the frames received from then on, by chargers, primary and secondary CSMS, of every scope not set to `viewer: false`:
 
-- `hello` — sent first: `{ serverTime, startedAt, maxBufferedMessages }` (ISO timestamps; `startedAt` is when this gateway instance started).
+- `hello` — sent first: `{ serverTime, startedAt, maxBufferedMessages }` (ISO timestamps; `startedAt` is when this gateway instance started; `maxBufferedMessages` is the only source of the page's buffer size).
 - `trace` — one per received frame, however many destinations it was routed to: the trace document as JSON (`id`, `kind`, `tenantId`, `sessionId`, `chargePointId`, `seq`, `receivedAt`, `deliveries`, and the Open OCPP Trace v1.1 record under `trace`, or `frame` for a frame v1.1 cannot represent). Secondary CSMS responses are included, with `meta.gateway.ignored`. Each `trace` event has an SSE `id`, increasing across the whole instance.
 - `delivery` — `{ id, index, delivery }`: a newer state of `deliveries[index]` of the trace document `id` (`queued` → `submitted` → `written`, `failed` or `dropped`). `written` means the WebSocket wrote the frame to its socket, **not** that the CSMS or the charger processed it: only an OCPP response proves that. Updates go to every connected client, including for documents a client never received (it connected later, or dropped them): a client must ignore a `delivery` whose `id` it does not know.
 - `gap` — `{ dropped }`: this client missed that many `trace`/`delivery` events, see below.
@@ -524,7 +524,7 @@ There is no history: a client only sees what is received while it is connected, 
 
 ### Security
 
-- Every route — the page, its assets, `GET /api/config`, even an unknown path — requires HTTP Basic authentication: no content is served without it (only a `400` for an unusable client IP header, or a `429` for a blocked source, may come before the credentials are checked, and neither carries content). Credentials are compared in constant time and never logged.
+- Every route — the page, its assets, the stream, even an unknown path — requires HTTP Basic authentication: no content is served without it (only a `400` for an unusable client IP header, or a `429` for a blocked source, may come before the credentials are checked, and neither carries content). Credentials are compared in constant time and never logged.
 - A source (IP address) with 10 wrong or malformed attempts within a minute gets `429 Too Many Requests` with `Retry-After` until that minute is over, even with the right credentials. Failed attempts are logged once per source and minute, without the credentials tried.
 - Responses carry `Cache-Control: no-store`, a strict Content Security Policy (no inline or third-party script), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`.
 - Basic authentication sends the password with every request: the viewer listens on loopback by default, and should only be exposed remotely behind an **HTTPS** reverse proxy. Set `VIEWER_CLIENT_IP_HEADER` only when that proxy overwrites the header with the client's address; otherwise a client could pick its own source and evade the attempt limit. Without it, every attempt through the proxy counts as the proxy's address.

@@ -252,6 +252,21 @@ describe("TraceStore", () => {
     expect(store.sessions).toBe(2);
   });
 
+  it("evicts nothing by count before a capacity is set, as the page's store before hello", () => {
+    const store = new TraceStore(Infinity);
+    for (let i = 0; i < 1500; i++) {
+      expect(store.addTrace(callDoc()).evicted).toEqual([]);
+    }
+    expect(store.size).toBe(1500);
+
+    // The hello's capacity then applies, the oldest evicted first.
+    const evicted = store.setCapacity(1000);
+    expect(evicted).toHaveLength(500);
+    expect(evicted[0].key).toBe(1);
+    expect(store.size).toBe(1000);
+    expect(store.evictedMessages).toBe(500);
+  });
+
   it("evicts the oldest entries past its capacity, and counts them", () => {
     const store = new TraceStore(2);
     const first = callDoc({ sessionId: "gone" });

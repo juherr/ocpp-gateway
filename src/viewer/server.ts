@@ -94,13 +94,6 @@ export function startViewer(config: ViewerConfig, deps: ViewerDeps): ViewerServe
     ["/", body("text/html; charset=utf-8", deps.assets.html)],
     ["/viewer.js", body("text/javascript; charset=utf-8", deps.assets.js)],
     ["/viewer.css", body("text/css; charset=utf-8", deps.assets.css)],
-    [
-      "/api/config",
-      body(
-        "application/json; charset=utf-8",
-        JSON.stringify({ maxBufferedMessages: config.maxBufferedMessages }),
-      ),
-    ],
   ]);
 
   const send = (req: IncomingMessage, res: ServerResponse, status: number, content: Body) => {

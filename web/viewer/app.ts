@@ -33,8 +33,11 @@ import {
 import { type Builder, buildTokens, HIGHLIGHT_MAX_CHARS, jsonTokens } from "./highlight";
 import { startLiveStream } from "./stream";
 
-/** Until `/api/config` or the stream's hello tells the configured capacity. */
-const DEFAULT_CAPACITY = 1000;
+/**
+ * No count bound until the stream's `hello` tells the configured one: it is
+ * the first event of every stream, so no message arrives before it.
+ */
+const CAPACITY_BEFORE_HELLO = Infinity;
 
 // --- DOM helpers: elements and text only ---
 
@@ -96,7 +99,7 @@ const filterUi = {
   text: byId<HTMLInputElement>("filter-text"),
 };
 
-const store = new TraceStore(DEFAULT_CAPACITY);
+const store = new TraceStore(CAPACITY_BEFORE_HELLO);
 const rows = new Map<number, HTMLTableRowElement>();
 /** The message of each row showing one (the others show gap markers), by key. */
 const messageRows = new Map<number, TraceEntry>();
@@ -882,22 +885,7 @@ function addGap({ added, evicted: out }: AddResult<GapEntry>): void {
   schedule();
 }
 
-async function loadCapacity(): Promise<void> {
-  try {
-    const response = await fetch("/api/config", { credentials: "same-origin", cache: "no-store" });
-    if (!response.ok) return;
-    const config = (await response.json()) as { maxBufferedMessages?: unknown };
-    if (Number.isInteger(config.maxBufferedMessages)) {
-      evicted(store.setCapacity(config.maxBufferedMessages as number));
-      schedule();
-    }
-  } catch {
-    // The stream's hello carries the same value.
-  }
-}
-
 showCounters();
-void loadCapacity();
 startLiveStream({
   onState: showState,
   onEvent,
