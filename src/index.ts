@@ -4,11 +4,18 @@ import { configureLogger, createLogger } from "./logger";
 import { startProxy } from "./proxy";
 import { RouteStore } from "./routes";
 import { TRACE_FLUSH_TIMEOUT_MS, type TraceArchive, openTraceArchive } from "./trace/archive";
+import { PLACEHOLDER_ASSETS } from "./viewer/placeholder";
+import { startViewer } from "./viewer/server";
 
 const log = createLogger("proxy");
 
-/** Hard stop if a graceful shutdown hangs (plus the trace flush, when archiving). */
+/**
+ * Hard stop if a graceful shutdown hangs (plus the trace flush, when
+ * archiving, and the viewer's close, when enabled).
+ */
 const SHUTDOWN_TIMEOUT_MS = 5000;
+/** Extra shutdown budget for the viewer to end its streams and connections. */
+const VIEWER_CLOSE_TIMEOUT_MS = 1000;
 /** How long exiting waits for pending error reports to be sent. */
 const ERROR_REPORT_FLUSH_TIMEOUT_MS = 2000;
 
@@ -50,8 +57,9 @@ async function main() {
   };
 
   // Traces name each CSMS by its backend id, never by its URL: every trace
-  // consumer (today the archive) needs them in every route, on every reload.
-  const requireBackendIds = config.trace !== undefined;
+  // consumer (the archive, the live viewer) needs them in every route, on
+  // every reload.
+  const requireBackendIds = config.trace !== undefined || config.viewer !== undefined;
   let routes: RouteStore;
   try {
     routes = RouteStore.load(config.routesFile, { requireBackendIds });
@@ -80,13 +88,22 @@ async function main() {
   gateway.server.once("error", exitOnListenError);
   gateway.server.once("listening", () => gateway.server.off("error", exitOnListenError));
 
+  // Its own port, after the gateway; it has logged and reported a listen error.
+  const viewer = config.viewer && startViewer(config.viewer, { assets: PLACEHOLDER_ASSETS });
+  if (viewer) {
+    viewer.server.once("error", exitOnListenError);
+    viewer.server.once("listening", () => viewer.server.off("error", exitOnListenError));
+  }
+
   const shutdown = () => {
     log.info("shutting down…");
     routes.close();
     // A shutdown that hangs is forced, still sending pending error reports.
     setTimeout(
       () => void exit(1),
-      SHUTDOWN_TIMEOUT_MS + (archive ? TRACE_FLUSH_TIMEOUT_MS : 0),
+      SHUTDOWN_TIMEOUT_MS +
+        (archive ? TRACE_FLUSH_TIMEOUT_MS : 0) +
+        (viewer ? VIEWER_CLOSE_TIMEOUT_MS : 0),
     ).unref();
     // close() ends every session synchronously, so their last trace outcomes
     // are already reported when the archive starts flushing. A repeated
@@ -94,7 +111,7 @@ async function main() {
     // are idempotent). Errors reported while closing are sent last, even if
     // a close fails.
     const closing = gateway.close();
-    void Promise.allSettled([closing, archive?.close()]).then(() => exit(0));
+    void Promise.allSettled([closing, archive?.close(), viewer?.close()]).then(() => exit(0));
   };
 
   process.on("SIGINT", shutdown);

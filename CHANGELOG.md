@@ -44,10 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   archived by default; the choice is made when a charger connects and follows
   routes file hot reloads for new connections. The excluded scopes are logged
   at startup and on reload (`untraced`).
-- Per-tenant switch for the upcoming live trace viewer: `"viewer": false` on a
+- Per-tenant switch for the live trace viewer: `"viewer": false` on a
   tenant of the routes file (or at its root, for connections without a tenant)
   keeps that scope out of the viewer, independently of `"trace"`. Every scope
-  is shown by default. No effect until the viewer ships.
+  is shown by default. No effect until the viewer streams frames.
 - Backends accept a stable `id` (`{ "id": "csms-a", "url": "…" }`), naming the
   logical CSMS in traces instead of its URL. Required on every backend when
   trace archiving is enabled; validated whenever present (format, unique within
@@ -63,6 +63,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by default; the Sentry SDK is not even loaded then. A full trace queue is
   reported too, once per saturation episode, and is now logged as an error;
   so is a full delivery-update queue, which used to drop outcomes silently.
+- Optional live trace viewer server (`VIEWER_ENABLED`, `VIEWER_USERNAME`,
+  `VIEWER_PASSWORD`, `VIEWER_HOST`, `VIEWER_PORT`,
+  `VIEWER_MAX_BUFFERED_MESSAGES`, `VIEWER_MAX_CLIENTS`,
+  `VIEWER_CLIENT_IP_HEADER`): a read-only HTTP server on its own port
+  (`127.0.0.1:9001` by default), every route behind HTTP Basic
+  authentication, with a per-source limit on failed attempts (`429`), a
+  strict Content Security Policy and `Cache-Control: no-store`. Independent
+  of trace archiving and MongoDB. It serves a placeholder page for now; the
+  viewer UI and the live stream of OCPP frames follow.
 
 ### Changed
 

@@ -45,6 +45,33 @@ export interface TraceConfig {
   requireCapped: boolean;
 }
 
+const DEFAULT_VIEWER_HOST = "127.0.0.1";
+const DEFAULT_VIEWER_PORT = 9001;
+const DEFAULT_VIEWER_MAX_BUFFERED_MESSAGES = 1000;
+const DEFAULT_VIEWER_MAX_CLIENTS = 5;
+
+/** Live trace viewer settings; see README "Live trace viewer". */
+export interface ViewerConfig {
+  /** HTTP Basic username. May carry credentials: never log it. */
+  username: string;
+  /** HTTP Basic password, verbatim. May carry credentials: never log it. */
+  password: string;
+  /** Address or hostname the viewer listens on; loopback by default. */
+  host: string;
+  /** Always different from the gateway's `PORT`. */
+  port: number;
+  /** Most messages a browser keeps; older ones are discarded. */
+  maxBufferedMessages: number;
+  /** Most browsers streaming at once. */
+  maxClients: number;
+  /**
+   * Header carrying the client's IP address, set by a trusted reverse proxy in
+   * front of the viewer; a request without exactly one is rejected with `400`.
+   * Unset: the socket's remote address is used.
+   */
+  clientIpHeader?: string;
+}
+
 /** Sentry error reporting settings; see README "Error reporting". */
 export interface SentryConfig {
   /** Not a secret (it only allows sending events), but never echoed either. */
@@ -87,6 +114,8 @@ export interface Config {
   trace?: TraceConfig;
   /** Error reporting to Sentry. Unset: disabled. */
   sentry?: SentryConfig;
+  /** Live trace viewer. Unset: disabled. */
+  viewer?: ViewerConfig;
 }
 
 function parseOptionalHostname(value: string | undefined): string | undefined {
@@ -175,6 +204,54 @@ function loadSentryConfig(): SentryConfig | undefined {
   };
 }
 
+/**
+ * A Basic credential, verbatim: never trimmed, since that would change the
+ * secret, but blank means unset. Errors never echo it.
+ */
+function credentialParser(allowColon: boolean) {
+  return (value: string | undefined): string => {
+    if (value === undefined || value.trim() === "") {
+      throw new Error("required when VIEWER_ENABLED is true");
+    }
+    // RFC 7617: the user-id ends at the first colon, and neither part may
+    // carry a control character.
+    const hasControl = [...value].some((char) => char < " " || char === "\u007f");
+    if (hasControl || (!allowColon && value.includes(":"))) {
+      throw new Error(
+        allowColon
+          ? "must not contain a control character"
+          : "must not contain a colon or a control character",
+      );
+    }
+    return value;
+  };
+}
+
+function loadViewerConfig(gatewayPort: number): ViewerConfig | undefined {
+  if (!parseEnv("VIEWER_ENABLED", (value) => parseBoolean(value, false))) return undefined;
+
+  const config: ViewerConfig = {
+    username: parseEnv("VIEWER_USERNAME", credentialParser(false)),
+    password: parseEnv("VIEWER_PASSWORD", credentialParser(true)),
+    host: parseEnv("VIEWER_HOST", parseOptionalListenHost) ?? DEFAULT_VIEWER_HOST,
+    port: parseEnv("VIEWER_PORT", (value) =>
+      parseOptionalIntegerInRange(value, DEFAULT_VIEWER_PORT, 1, 65535),
+    ),
+    maxBufferedMessages: parseEnv("VIEWER_MAX_BUFFERED_MESSAGES", (value) =>
+      parseOptionalIntegerInRange(value, DEFAULT_VIEWER_MAX_BUFFERED_MESSAGES, 1, 100_000),
+    ),
+    maxClients: parseEnv("VIEWER_MAX_CLIENTS", (value) =>
+      parseOptionalIntegerInRange(value, DEFAULT_VIEWER_MAX_CLIENTS, 1, 1000),
+    ),
+    clientIpHeader: parseEnv("VIEWER_CLIENT_IP_HEADER", parseOptionalHeaderName),
+  };
+  // Kept apart even when the hosts differ, so the viewer can be firewalled alone.
+  if (config.port === gatewayPort) {
+    throw new Error("Invalid value for environment variable VIEWER_PORT: must differ from PORT");
+  }
+  return config;
+}
+
 export function loadConfig(): Config {
   const routesFile = process.env.ROUTES_FILE ?? "./routes.json";
 
@@ -217,5 +294,6 @@ export function loadConfig(): Config {
     clientIpHeader,
     trace: loadTraceConfig(maxMessageBytes),
     sentry: loadSentryConfig(),
+    viewer: loadViewerConfig(port),
   };
 }

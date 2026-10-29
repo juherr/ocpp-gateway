@@ -1,5 +1,5 @@
-import { createHash, timingSafeEqual } from "node:crypto";
 import type { TenantId } from "./tenants";
+import { constantTimeEqual } from "./utils/secrets";
 
 /**
  * Identifies a charger session. The same chargeBoxId may live in several
@@ -44,7 +44,8 @@ export class SessionRegistry<T extends { teardown(): void }> {
     const sessions: T[] = [];
     let kept = 0;
     for (const [session, sessionAuth] of this.sessions.get(canonical(key)) ?? []) {
-      if (sameCredentials(sessionAuth, authHeader)) sessions.push(session);
+      // Constant time, so response timing does not leak the stored credentials.
+      if (constantTimeEqual(sessionAuth, authHeader)) sessions.push(session);
       else kept += 1;
     }
     return { sessions, kept };
@@ -86,14 +87,4 @@ export class SessionRegistry<T extends { teardown(): void }> {
     entries.delete(session);
     if (entries.size === 0) this.sessions.delete(id);
   }
-}
-
-/** Constant-time comparison, so response timing does not leak the stored credentials. */
-function sameCredentials(a: string | undefined, b: string | undefined): boolean {
-  if (a === undefined || b === undefined) return a === b;
-  return timingSafeEqual(digest(a), digest(b));
-}
-
-function digest(value: string): Buffer {
-  return createHash("sha256").update(value).digest();
 }

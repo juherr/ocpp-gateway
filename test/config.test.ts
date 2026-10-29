@@ -24,6 +24,14 @@ describe("loadConfig", () => {
     "SENTRY_DSN",
     "SENTRY_ENVIRONMENT",
     "SENTRY_RELEASE",
+    "VIEWER_ENABLED",
+    "VIEWER_USERNAME",
+    "VIEWER_PASSWORD",
+    "VIEWER_HOST",
+    "VIEWER_PORT",
+    "VIEWER_MAX_BUFFERED_MESSAGES",
+    "VIEWER_MAX_CLIENTS",
+    "VIEWER_CLIENT_IP_HEADER",
   ] as const;
 
   beforeEach(() => {
@@ -53,6 +61,7 @@ describe("loadConfig", () => {
     expect(config.clientIpHeader).toBeUndefined();
     expect(config.trace).toBeUndefined();
     expect(config.sentry).toBeUndefined();
+    expect(config.viewer).toBeUndefined();
   });
 
   it("reads the session limits", () => {
@@ -451,6 +460,177 @@ describe("loadConfig", () => {
         "Invalid value for environment variable SENTRY_DSN: must be http(s)://<key>@<host>/<numeric projectId>",
       );
       expect(() => loadConfig()).not.toThrow(/publickey/);
+    });
+  });
+  describe("live trace viewer", () => {
+    // Distinctive values, so a test can tell they never leak into an error.
+    const USERNAME = "viewer-user-7f3a9c";
+    const PASSWORD = "s3cr3t-viewer-pw-91d2e8";
+
+    const enable = () => {
+      vi.stubEnv("VIEWER_ENABLED", "true");
+      vi.stubEnv("VIEWER_USERNAME", USERNAME);
+      vi.stubEnv("VIEWER_PASSWORD", PASSWORD);
+    };
+
+    /** The thrown error's message and its causes', where a secret could hide. */
+    const thrownMessages = (): string => {
+      try {
+        loadConfig();
+      } catch (error) {
+        const messages: string[] = [];
+        for (let e: unknown = error; e instanceof Error; e = e.cause) messages.push(e.message);
+        return messages.join("\n");
+      }
+      throw new Error("loadConfig() did not throw");
+    };
+
+    it("is disabled by default, ignoring the other viewer variables", () => {
+      vi.stubEnv("VIEWER_USERNAME", USERNAME);
+      vi.stubEnv("VIEWER_PORT", "not a port");
+      vi.stubEnv("VIEWER_MAX_CLIENTS", "0");
+
+      expect(loadConfig().viewer).toBeUndefined();
+      vi.stubEnv("VIEWER_ENABLED", "false");
+      expect(loadConfig().viewer).toBeUndefined();
+    });
+
+    it("applies defaults", () => {
+      enable();
+
+      expect(loadConfig().viewer).toEqual({
+        username: USERNAME,
+        password: PASSWORD,
+        host: "127.0.0.1",
+        port: 9001,
+        maxBufferedMessages: 1000,
+        maxClients: 5,
+        clientIpHeader: undefined,
+      });
+    });
+
+    it("does not enable trace archiving nor lift its message size cap", () => {
+      enable();
+      vi.stubEnv("MAX_MESSAGE_BYTES", String(64 * 1024 * 1024));
+
+      const config = loadConfig();
+      expect(config.trace).toBeUndefined();
+      expect(config.maxMessageBytes).toBe(64 * 1024 * 1024);
+    });
+
+    it("reads custom values", () => {
+      enable();
+      vi.stubEnv("VIEWER_HOST", " 0.0.0.0 ");
+      vi.stubEnv("VIEWER_PORT", "9100");
+      vi.stubEnv("VIEWER_MAX_BUFFERED_MESSAGES", "5000");
+      vi.stubEnv("VIEWER_MAX_CLIENTS", "2");
+      vi.stubEnv("VIEWER_CLIENT_IP_HEADER", "X-Real-IP");
+
+      expect(loadConfig().viewer).toMatchObject({
+        host: "0.0.0.0",
+        port: 9100,
+        maxBufferedMessages: 5000,
+        maxClients: 2,
+        clientIpHeader: "x-real-ip",
+      });
+    });
+
+    it("accepts an IPv6 address or a hostname as VIEWER_HOST", () => {
+      enable();
+      vi.stubEnv("VIEWER_HOST", "::1");
+      expect(loadConfig().viewer?.host).toBe("::1");
+      vi.stubEnv("VIEWER_HOST", "localhost");
+      expect(loadConfig().viewer?.host).toBe("localhost");
+    });
+
+    it("keeps the password verbatim, surrounding spaces included", () => {
+      enable();
+      vi.stubEnv("VIEWER_PASSWORD", `  ${PASSWORD} `);
+
+      expect(loadConfig().viewer?.password).toBe(`  ${PASSWORD} `);
+    });
+
+    it.each([
+      ["VIEWER_USERNAME", undefined],
+      ["VIEWER_USERNAME", ""],
+      ["VIEWER_USERNAME", "   "],
+      ["VIEWER_PASSWORD", undefined],
+      ["VIEWER_PASSWORD", ""],
+      ["VIEWER_PASSWORD", "   "],
+    ])("requires %s (%j) without echoing any secret", (name, value) => {
+      enable();
+      vi.stubEnv(name, value);
+
+      expect(() => loadConfig()).toThrow(
+        `Invalid value for environment variable ${name}: required when VIEWER_ENABLED is true`,
+      );
+      const messages = thrownMessages();
+      expect(messages).not.toContain(USERNAME);
+      expect(messages).not.toContain(PASSWORD);
+    });
+
+    it("rejects a username with a colon, which Basic authentication cannot carry", () => {
+      enable();
+      vi.stubEnv("VIEWER_USERNAME", `${USERNAME}:x`);
+
+      expect(() => loadConfig()).toThrow(
+        "Invalid value for environment variable VIEWER_USERNAME: must not contain a colon or a control character",
+      );
+      expect(thrownMessages()).not.toContain(USERNAME);
+    });
+
+    it.each(["VIEWER_USERNAME", "VIEWER_PASSWORD"])(
+      "rejects a control character in %s without echoing it",
+      (name) => {
+        enable();
+        vi.stubEnv(name, `${name === "VIEWER_USERNAME" ? USERNAME : PASSWORD}\n`);
+
+        expect(() => loadConfig()).toThrow(/must not contain .*a control character/);
+        const messages = thrownMessages();
+        expect(messages).not.toContain(USERNAME);
+        expect(messages).not.toContain(PASSWORD);
+      },
+    );
+
+    it.each([
+      ["VIEWER_PORT", "0"],
+      ["VIEWER_PORT", "65536"],
+      ["VIEWER_PORT", "abc"],
+      ["VIEWER_MAX_BUFFERED_MESSAGES", "0"],
+      ["VIEWER_MAX_BUFFERED_MESSAGES", "100001"],
+      ["VIEWER_MAX_CLIENTS", "0"],
+      ["VIEWER_MAX_CLIENTS", "1001"],
+      ["VIEWER_HOST", "not a host!"],
+      ["VIEWER_HOST", "127.0.0.1:9001"],
+      ["VIEWER_CLIENT_IP_HEADER", "x real ip"],
+      ["VIEWER_ENABLED", "yes"],
+    ])("rejects %s=%j", (name, value) => {
+      enable();
+      vi.stubEnv(name, value);
+
+      expect(() => loadConfig()).toThrow(`Invalid value for environment variable ${name}`);
+      const messages = thrownMessages();
+      expect(messages).not.toContain(USERNAME);
+      expect(messages).not.toContain(PASSWORD);
+    });
+
+    it("requires a port other than the gateway's", () => {
+      enable();
+      vi.stubEnv("PORT", "9100");
+      vi.stubEnv("VIEWER_PORT", "9100");
+
+      expect(() => loadConfig()).toThrow(
+        "Invalid value for environment variable VIEWER_PORT: must differ from PORT",
+      );
+    });
+
+    it("rejects a gateway PORT equal to the default viewer port", () => {
+      enable();
+      vi.stubEnv("PORT", "9001");
+
+      expect(() => loadConfig()).toThrow(
+        "Invalid value for environment variable VIEWER_PORT: must differ from PORT",
+      );
     });
   });
 });
