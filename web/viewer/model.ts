@@ -308,16 +308,133 @@ function weight(entry: Entry): number {
   return typeof raw === "string" ? raw.length : 0;
 }
 
+/** How many buffered messages hold each value; `version` moves when the set of values does. */
+class ValueCounts<K> {
+  private readonly counts = new Map<K, number>();
+
+  constructor(private readonly changed: () => void) {}
+
+  get size(): number {
+    return this.counts.size;
+  }
+
+  add(value: K): void {
+    const count = this.counts.get(value) ?? 0;
+    this.counts.set(value, count + 1);
+    if (count === 0) this.changed();
+  }
+
+  remove(value: K): void {
+    const count = (this.counts.get(value) ?? 1) - 1;
+    if (count > 0) {
+      this.counts.set(value, count);
+    } else if (this.counts.delete(value)) {
+      this.changed();
+    }
+  }
+
+  clear(): void {
+    if (this.counts.size > 0) this.changed();
+    this.counts.clear();
+  }
+
+  values(): K[] {
+    return [...this.counts.keys()];
+  }
+}
+
+/** The distinct values of the buffered messages, for the filters' option lists. */
+export interface ObservedValues {
+  /** `null`: messages without a tenant (the global scope). */
+  tenants: (string | null)[];
+  chargePointIds: string[];
+  /** Actions as listed, a response's from its correlated CALL. */
+  actions: string[];
+  /** Source labels (`sourceLabel`). */
+  sources: string[];
+}
+
+const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** A messages' buffer bounded by count and bytes, oldest first. */
+class EntryQueue {
+  private items: Entry[] = [];
+  private head = 0;
+  /** The buffered messages' weight. */
+  bytes = 0;
+
+  get size(): number {
+    return this.items.length - this.head;
+  }
+
+  last(): Entry | undefined {
+    return this.size > 0 ? this.items[this.items.length - 1] : undefined;
+  }
+
+  push(entry: Entry): void {
+    this.items.push(entry);
+    this.bytes += weight(entry);
+  }
+
+  shift(): Entry {
+    const entry = this.items[this.head++];
+    this.bytes -= weight(entry);
+    if (this.head > 1024 && this.head * 2 > this.items.length) this.compact();
+    return entry;
+  }
+
+  /** The newest entry matching `predicate`. */
+  findLast(predicate: (entry: Entry) => boolean): Entry | undefined {
+    for (let i = this.items.length - 1; i >= this.head; i--) {
+      if (predicate(this.items[i])) return this.items[i];
+    }
+    return undefined;
+  }
+
+  has(entry: Entry): boolean {
+    return this.items.indexOf(entry, this.head) !== -1;
+  }
+
+  /** Empties the queue; returns what it held. */
+  drain(): Entry[] {
+    const drained = this.items.slice(this.head);
+    this.items = [];
+    this.head = 0;
+    this.bytes = 0;
+    return drained;
+  }
+
+  private compact(): void {
+    if (this.head === 0) return;
+    this.items = this.items.slice(this.head);
+    this.head = 0;
+  }
+}
+
 /**
  * The last `capacity` entries (messages and gap markers), in reception order,
  * holding at most `maxBytes` of raw frames — except for a single message
  * larger than that, kept alone. The oldest are evicted first, and counted.
+ *
+ * Paused, it lists nothing new: what arrives meanwhile is held apart, within
+ * the same bounds (so up to twice them in all), the oldest dropped first and
+ * counted, and listed on resume. Delivery updates still apply to every
+ * message, listed or held.
  */
 export class TraceStore {
   private items: Entry[] = [];
   private head = 0;
+  private readonly held = new EntryQueue();
+  private heldMessages = 0;
+  private isPaused = false;
+  /** Every entry created since the pause is held. */
+  private heldFromKey = Infinity;
   private readonly byId = new Map<string, TraceEntry>();
   private readonly sessionCounts = new Map<string, number>();
+  private readonly tenantCounts = new ValueCounts<string | null>(() => this.observedVersion++);
+  private readonly chargePointCounts = new ValueCounts<string>(() => this.observedVersion++);
+  private readonly actionCounts = new ValueCounts<string>(() => this.observedVersion++);
+  private readonly sourceCounts = new ValueCounts<string>(() => this.observedVersion++);
   private nextKey = 1;
   /** Messages received since the page loaded. */
   received = 0;
@@ -325,17 +442,71 @@ export class TraceStore {
   evictedMessages = 0;
   /** Gap markers pushed out by the bounds. */
   evictedGaps = 0;
+  /** Messages held while paused, then dropped by the bounds before the resume. */
+  pendingDropped = 0;
   /** The buffered messages' weight against `maxBytes`. */
   bytes = 0;
+  /** Changes whenever `observed()` would return another set of values. */
+  observedVersion = 0;
 
   constructor(
     private capacity: number,
     private readonly maxBytes = MAX_BUFFERED_BYTES,
   ) {}
 
-  /** Distinct sessions among the buffered messages. */
+  /** Distinct sessions among the buffered messages, held ones included. */
   get sessions(): number {
     return this.sessionCounts.size;
+  }
+
+  get paused(): boolean {
+    return this.isPaused;
+  }
+
+  /** Messages held while paused, waiting for the resume. */
+  get pendingMessages(): number {
+    return this.heldMessages;
+  }
+
+  /** The entry is held while paused, not listed yet. */
+  isPending(entry: Entry): boolean {
+    if (!this.isPaused || entry.key < this.heldFromKey) return false;
+    return entry.kind === "trace" ? this.byId.get(entry.doc.id) === entry : this.held.has(entry);
+  }
+
+  /** Stops listing what arrives; ignored when already paused. */
+  pause(): void {
+    if (this.isPaused) return;
+    this.isPaused = true;
+    this.heldFromKey = this.nextKey;
+  }
+
+  /**
+   * Lists the held entries after the others, in reception order; returns them
+   * and the entries their addition evicted. Ignored when not paused.
+   */
+  resume(): { added: Entry[]; evicted: Entry[] } {
+    if (!this.isPaused) return { added: [], evicted: [] };
+    this.isPaused = false;
+    const added = this.held.drain();
+    this.heldMessages = 0;
+    for (const entry of added) {
+      this.items.push(entry);
+      this.bytes += weight(entry);
+    }
+    return { added, evicted: this.trim() };
+  }
+
+  /** The distinct values of the buffered messages (held ones included), sorted. */
+  observed(): ObservedValues {
+    const tenants = this.tenantCounts.values();
+    const named = tenants.filter((t): t is string => t !== null).sort(byText);
+    return {
+      tenants: tenants.includes(null) ? [null, ...named] : named,
+      chargePointIds: this.chargePointCounts.values().sort(byText),
+      actions: this.actionCounts.values().sort(byText),
+      sources: this.sourceCounts.values().sort(byText),
+    };
   }
 
   get size(): number {
@@ -351,18 +522,31 @@ export class TraceStore {
     return this.byId.get(id);
   }
 
-  /** Changes the capacity (at least 1; ignored unless finite); returns the entries evicted. */
+  /**
+   * Changes the capacity (at least 1; ignored unless finite); returns the
+   * entries evicted, held ones included.
+   */
   setCapacity(capacity: number): Entry[] {
     if (typeof capacity !== "number" || !Number.isFinite(capacity)) return [];
     this.capacity = Math.max(1, Math.floor(capacity));
-    return this.trim();
+    return [...this.trim(), ...this.trimHeld()];
   }
 
+  /**
+   * Lists a received message, or holds it while paused. `evicted`: the
+   * entries it pushed out, listed or held.
+   */
   addTrace(doc: WireTraceDocument): AddResult<TraceEntry> {
     const entry: TraceEntry = { kind: "trace", key: this.nextKey++, doc, summary: summarize(doc) };
     this.received++;
     this.byId.set(doc.id, entry);
     this.sessionCounts.set(doc.sessionId, (this.sessionCounts.get(doc.sessionId) ?? 0) + 1);
+    this.observe(entry, true);
+    if (this.isPaused) {
+      this.held.push(entry);
+      this.heldMessages++;
+      return { added: entry, evicted: this.trimHeld() };
+    }
     this.bytes += weight(entry);
     this.items.push(entry);
     return { added: entry, evicted: this.trim() };
@@ -370,10 +554,16 @@ export class TraceStore {
 
   /**
    * Adds a gap marker, or extends the last entry when it is a gap of the same
-   * kind: a connection that keeps failing never floods the buffer.
+   * kind: a connection that keeps failing never floods the buffer. Paused,
+   * the marker is held in its place among the held messages, and only a held
+   * gap is extended.
    */
   addGap(gap: NewGap): AddResult<GapEntry> {
-    const last = this.size > 0 ? this.items[this.items.length - 1] : undefined;
+    const last = this.isPaused
+      ? this.held.last()
+      : this.size > 0
+        ? this.items[this.items.length - 1]
+        : undefined;
     if (last?.kind === "gap" && last.reason === gap.reason) {
       if (gap.reason === "missed") {
         last.missed = (last.missed ?? 0) + gap.missed;
@@ -390,21 +580,26 @@ export class TraceStore {
       from: gap.at,
       ...(gap.reason === "missed" && { missed: gap.missed }),
     };
+    if (this.isPaused) {
+      this.held.push(entry);
+      return { added: entry, evicted: this.trimHeld() };
+    }
     this.items.push(entry);
     return { added: entry, evicted: this.trim() };
   }
 
-  /** Ends the open disconnection gap, if any; returns it. */
+  /** Ends the open disconnection gap, held or listed, if any; returns it. */
   closeGap(at: string, restarted: boolean): GapEntry | undefined {
-    for (let i = this.items.length - 1; i >= this.head; i--) {
-      const entry = this.items[i];
-      if (entry.kind === "gap" && entry.reason === "disconnected" && entry.to === undefined) {
-        entry.to = at;
-        entry.restarted = (entry.restarted ?? false) || restarted;
-        return entry;
-      }
+    const open = (entry: Entry): entry is GapEntry =>
+      entry.kind === "gap" && entry.reason === "disconnected" && entry.to === undefined;
+    let found: Entry | undefined = this.held.findLast(open);
+    for (let i = this.items.length - 1; found === undefined && i >= this.head; i--) {
+      if (open(this.items[i])) found = this.items[i];
     }
-    return undefined;
+    if (found?.kind !== "gap") return undefined;
+    found.to = at;
+    found.restarted = (found.restarted ?? false) || restarted;
+    return found;
   }
 
   /**
@@ -428,13 +623,22 @@ export class TraceStore {
     return entry;
   }
 
-  /** Empties the buffer, keeping the totals; returns the entries removed. */
+  /**
+   * Empties the buffer, held entries included, keeping the totals and the
+   * pause; returns the listed entries removed.
+   */
   clear(): Entry[] {
     const removed = this.items.slice(this.head);
     this.items = [];
     this.head = 0;
+    this.held.drain();
+    this.heldMessages = 0;
     this.byId.clear();
     this.sessionCounts.clear();
+    this.tenantCounts.clear();
+    this.chargePointCounts.clear();
+    this.actionCounts.clear();
+    this.sourceCounts.clear();
     this.bytes = 0;
     return removed;
   }
@@ -444,6 +648,7 @@ export class TraceStore {
     while (this.size > this.capacity || (this.bytes > this.maxBytes && this.size > 1)) {
       const entry = this.items[this.head++];
       evicted.push(entry);
+      this.bytes -= weight(entry);
       this.forget(entry);
       if (entry.kind === "trace") this.evictedMessages++;
       else this.evictedGaps++;
@@ -452,13 +657,42 @@ export class TraceStore {
     return evicted;
   }
 
+  /** The held entries within the same bounds; a dropped message counts in `pendingDropped`. */
+  private trimHeld(): Entry[] {
+    const dropped: Entry[] = [];
+    while (
+      this.held.size > this.capacity ||
+      (this.held.bytes > this.maxBytes && this.held.size > 1)
+    ) {
+      const entry = this.held.shift();
+      dropped.push(entry);
+      this.forget(entry);
+      if (entry.kind === "trace") {
+        this.heldMessages--;
+        this.pendingDropped++;
+      } else {
+        this.evictedGaps++;
+      }
+    }
+    return dropped;
+  }
+
   private forget(entry: Entry): void {
     if (entry.kind !== "trace") return;
-    this.bytes -= weight(entry);
     this.byId.delete(entry.doc.id);
     const count = (this.sessionCounts.get(entry.doc.sessionId) ?? 1) - 1;
     if (count > 0) this.sessionCounts.set(entry.doc.sessionId, count);
     else this.sessionCounts.delete(entry.doc.sessionId);
+    this.observe(entry, false);
+  }
+
+  private observe(entry: TraceEntry, add: boolean): void {
+    const { summary, doc } = entry;
+    const op = add ? "add" : "remove";
+    this.tenantCounts[op](doc.tenantId);
+    this.chargePointCounts[op](summary.chargePointId);
+    this.sourceCounts[op](summary.source);
+    if (summary.action !== NONE) this.actionCounts[op](summary.action);
   }
 
   private compact(): void {
@@ -466,6 +700,126 @@ export class TraceStore {
     this.items = this.items.slice(this.head);
     this.head = 0;
   }
+}
+
+// --- Filters ---
+
+/** Which messages the list shows; every condition set must hold. */
+export interface FilterState {
+  /** `""`: any tenant; `null`: messages without a tenant (the global scope). */
+  tenant: string | null;
+  /** Case-insensitive part of the charge point id; `""`: any. */
+  chargePointId: string;
+  /** Case-insensitive part of the session id; `""`: any. */
+  sessionId: string;
+  direction: Direction | "";
+  messageType: RowSummary["type"] | "";
+  /** The exact action, a response's from its correlated CALL; `""`: any. */
+  action: string;
+  /** The exact source label (`charger`, `primary <id>`, `secondary <id>`); `""`: any. */
+  source: string;
+  /** Case-insensitive part of the OCPP message id; `""`: any. */
+  messageId: string;
+  /**
+   * A status at least one destination has (whatever the row's synthetic
+   * status), or `none` for a message routed nowhere; `""`: any.
+   */
+  delivery: DeliveryStatus | "none" | "";
+  /**
+   * Case-insensitive text found in a message's metadata: trace id, tenant,
+   * session id, charge point id, message type, action, source, message id or
+   * an unparsed frame's reason. Never in the payload, the error or the raw
+   * frame, which may hold secrets.
+   */
+  text: string;
+}
+
+export const EMPTY_FILTER: Readonly<FilterState> = Object.freeze({
+  tenant: "",
+  chargePointId: "",
+  sessionId: "",
+  direction: "",
+  messageType: "",
+  action: "",
+  source: "",
+  messageId: "",
+  delivery: "",
+  text: "",
+});
+
+export function isFilterActive(filter: FilterState): boolean {
+  return (Object.keys(EMPTY_FILTER) as (keyof FilterState)[]).some((key) =>
+    typeof filter[key] === "string" ? filter[key].trim() !== "" : filter[key] !== EMPTY_FILTER[key],
+  );
+}
+
+const contains = (value: string, part: string) => value.toLowerCase().includes(part);
+
+/**
+ * The filter as a predicate over the list's entries. Gap markers always pass:
+ * they describe the stream, not a message, and a filtered list still has to
+ * show where messages may be missing.
+ */
+export function filterPredicate(filter: FilterState): (entry: Entry) => boolean {
+  const part = (value: string) => value.trim().toLowerCase();
+  const chargePointId = part(filter.chargePointId);
+  const sessionId = part(filter.sessionId);
+  const messageId = part(filter.messageId);
+  const text = part(filter.text);
+  return (entry) => {
+    if (entry.kind === "gap") return true;
+    const { summary: s, doc } = entry;
+    if (filter.tenant !== "" && doc.tenantId !== filter.tenant) return false;
+    if (chargePointId && !contains(s.chargePointId, chargePointId)) return false;
+    if (sessionId && !contains(s.sessionId, sessionId)) return false;
+    if (filter.direction && s.direction !== filter.direction) return false;
+    if (filter.messageType && s.type !== filter.messageType) return false;
+    if (filter.action && s.action !== filter.action) return false;
+    if (filter.source && s.source !== filter.source) return false;
+    if (messageId && (s.messageId === NONE || !contains(s.messageId, messageId))) return false;
+    if (filter.delivery === "none" && doc.deliveries.length > 0) return false;
+    if (
+      filter.delivery &&
+      filter.delivery !== "none" &&
+      !doc.deliveries.some((d) => d.status === filter.delivery)
+    ) {
+      return false;
+    }
+    if (text) {
+      const metadata = [doc.id, doc.tenantId ?? "", s.sessionId, s.chargePointId, s.type, s.source];
+      if (s.action !== NONE) metadata.push(s.action);
+      if (s.messageId !== NONE) metadata.push(s.messageId);
+      if (s.reason !== undefined) metadata.push(s.reason);
+      if (!metadata.some((value) => contains(value, text))) return false;
+    }
+    return true;
+  };
+}
+
+// --- Export ---
+
+/**
+ * JSON Lines of the given entries' trace records (`trace`: Open OCPP Trace
+ * v1.1, exactly as streamed, gateway metadata included, delivery outcomes
+ * not: they are not part of the record) or unparsed frames (`frame`), one per
+ * line in list order. Gap markers and the other kind are left out; nothing is
+ * modified.
+ */
+export function toJsonl(entries: readonly Entry[], kind: "trace" | "frame"): string {
+  let out = "";
+  for (const entry of entries) {
+    if (entry.kind !== "trace") continue;
+    const { doc } = entry;
+    if (kind === "trace" && doc.kind === "trace") out += `${JSON.stringify(doc.trace)}\n`;
+    else if (kind === "frame" && doc.kind === "frame") out += `${JSON.stringify(doc.frame)}\n`;
+  }
+  return out;
+}
+
+/** `ocpp-traces-<ISO time>.jsonl` (or `ocpp-unparsed-frames-…`), colons replaced for every OS. */
+export function exportFilename(kind: "trace" | "frame", at: Date): string {
+  const prefix = kind === "trace" ? "ocpp-traces" : "ocpp-unparsed-frames";
+  return `${prefix}-${at.toISOString().replace(/:/g, "-")}.jsonl`;
 }
 
 // --- What the next render must do ---
