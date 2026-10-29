@@ -37,6 +37,8 @@ export interface LiveStreamOptions {
 }
 
 export interface LiveStream {
+  /** Events skipped because a handler threw on them (logged to the console). */
+  readonly skipped: number;
   /** Stops reading and retrying. Idempotent. */
   stop(): void;
 }
@@ -55,6 +57,7 @@ export function startLiveStream(
   let stopped = false;
   let controller: AbortController | undefined;
   let timer: unknown;
+  let skipped = 0;
 
   const fail = (failure: Failure) => {
     if (stopped) return;
@@ -71,15 +74,26 @@ export function startLiveStream(
     }, decision.retryInMs);
   };
 
+  /** One event a handler cannot process (a malformed document) is skipped, not fatal. */
+  const isolated = (handle: () => void) => {
+    try {
+      handle();
+    } catch (error) {
+      skipped++;
+      console.warn("viewer: skipped a stream event its handler could not process", error);
+    }
+  };
+
   const attempt = async () => {
-    controller = new AbortController();
+    const attemptController = new AbortController();
+    controller = attemptController;
     let response: Response;
     try {
       response = await doFetch(url, {
         credentials: "same-origin",
         cache: "no-store",
         headers: { accept: "text/event-stream", ...options.headers },
-        signal: controller.signal,
+        signal: attemptController.signal,
       });
     } catch {
       return fail({ kind: "network" });
@@ -100,9 +114,9 @@ export function startLiveStream(
       if (event.type === "hello") {
         const result = machine.connected(event.hello, now());
         handlers.onState(machine.state);
-        handlers.onConnected(result, event.hello);
+        isolated(() => handlers.onConnected(result, event.hello));
       }
-      handlers.onEvent(event);
+      isolated(() => handlers.onEvent(event));
     });
     const decoder = new TextDecoder();
     const reader = response.body.getReader();
@@ -115,6 +129,9 @@ export function startLiveStream(
       parser.push(decoder.decode());
     } catch {
       // A reset or an abort ends the stream like its end does.
+    } finally {
+      // However the attempt ended, its request goes before the next one starts.
+      attemptController.abort();
     }
     parser.end();
     fail({ kind: "ended" });
@@ -124,6 +141,9 @@ export function startLiveStream(
   void attempt();
 
   return {
+    get skipped() {
+      return skipped;
+    },
     stop() {
       if (stopped) return;
       stopped = true;

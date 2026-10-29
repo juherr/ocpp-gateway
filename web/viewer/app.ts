@@ -13,6 +13,7 @@ import {
   type GapEntry,
   NONE,
   RenderQueue,
+  shortId,
   sourceLabel,
   type StreamEvent,
   type TraceEntry,
@@ -64,6 +65,8 @@ const ui = {
 const store = new TraceStore(DEFAULT_CAPACITY);
 const rows = new Map<number, HTMLTableRowElement>();
 let selected: TraceEntry | undefined;
+/** The selected message's Deliveries section, refreshed on its own. */
+let detailDeliveries: HTMLElement | undefined;
 
 /**
  * Which entries are listed: every one for now. Filters plug in here; a filter
@@ -113,7 +116,7 @@ function flush(): void {
   }
   if (atBottom) ui.scroll.scrollTop = ui.scroll.scrollHeight;
 
-  if (detailDirty && selected) renderDetail(selected);
+  if (detailDirty && selected) refreshDeliveries(selected);
   detailDirty = false;
 
   ui.received.textContent = store.received.toLocaleString("en");
@@ -158,9 +161,18 @@ function fillRow(row: HTMLTableRowElement, entry: Entry): void {
     s.type === "unparsed"
       ? `unparsed: ${s.reason ?? NONE}`
       : `${s.messageId} · OCPP ${s.ocppVersion}`;
+  const session = el("span", "session", `session ${shortId(s.sessionId)}`);
+  session.title = `Session ID ${s.sessionId}`;
   row.replaceChildren(
     el("td", "time", s.time),
-    el("td", "what", el("span", "cp", s.chargePointId), " ", action, el("span", "sub", details)),
+    el(
+      "td",
+      "what",
+      el("span", "cp", s.chargePointId),
+      " ",
+      action,
+      el("span", "sub", `${details} · `, session),
+    ),
     el("td", "type", el("span", `pill type-${s.type.toLowerCase()}`, s.type)),
     el(
       "td",
@@ -303,9 +315,22 @@ function renderDetail(entry: TraceEntry): void {
   if (gateway.binary) field(meta, "Binary", "yes: received as a binary message");
   sections.push(section("Gateway", meta));
 
-  sections.push(deliveriesSection(doc));
+  detailDeliveries = deliveriesSection(doc);
+  sections.push(detailDeliveries);
   sections.push(section("Raw frame", el("pre", "code raw", captured.raw)));
   ui.detail.replaceChildren(...sections);
+}
+
+/**
+ * A delivery update on the selected message replaces its Deliveries section
+ * only: the payload is not rendered again, and the copy feedback and the
+ * scroll position stay.
+ */
+function refreshDeliveries(entry: TraceEntry): void {
+  if (!detailDeliveries?.isConnected) return renderDetail(entry);
+  const next = deliveriesSection(entry.doc);
+  detailDeliveries.replaceWith(next);
+  detailDeliveries = next;
 }
 
 function section(title: string, ...content: Child[]): HTMLElement {

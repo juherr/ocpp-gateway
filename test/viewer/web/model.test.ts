@@ -5,8 +5,10 @@ import {
   ConnectionMachine,
   decodeEvent,
   formatClock,
+  MAX_BUFFERED_BYTES,
   RenderQueue,
   responseFailure,
+  shortId,
   STABLE_CONNECTION_MS,
   summarize,
   syntheticStatus,
@@ -116,6 +118,13 @@ describe("formatClock", () => {
 
   it("shows an unreadable time as a dash", () => {
     expect(formatClock("not a date", true)).toBe("—");
+  });
+});
+
+describe("shortId", () => {
+  it("keeps the first 8 characters of a session id", () => {
+    expect(shortId("0f8fad5b-d9cb-469f-a165-70867728950e")).toBe("0f8fad5b");
+    expect(shortId("abc")).toBe("abc");
   });
 });
 
@@ -253,9 +262,50 @@ describe("TraceStore", () => {
     expect(evicted.map((e) => e.key)).toEqual([1]);
     expect(store.entries()).toHaveLength(2);
     expect(store.get(first.id)).toBeUndefined();
-    expect(store.evicted).toBe(1);
+    expect(store.evictedMessages).toBe(1);
+    expect(store.evictedGaps).toBe(0);
     expect(store.received).toBe(3);
     expect(store.sessions).toBe(1);
+  });
+
+  it("counts evicted messages apart from evicted gap markers", () => {
+    const store = new TraceStore(1);
+    store.addTrace(callDoc());
+    store.addGap({ reason: "missed", at: T0, missed: 1 });
+    store.addTrace(callDoc());
+    store.addTrace(callDoc());
+
+    expect(store.evictedMessages).toBe(2);
+    expect(store.evictedGaps).toBe(1);
+  });
+
+  it("evicts the oldest messages past its byte bound (raw frame lengths)", () => {
+    const store = new TraceStore(100, 25);
+    const sized = (length: number) => {
+      const doc = callDoc();
+      if (doc.kind === "trace") doc.trace.raw = "x".repeat(length);
+      return doc;
+    };
+    const first = sized(10);
+    store.addTrace(first);
+    store.addTrace(sized(10));
+    expect(store.bytes).toBe(20);
+
+    const { evicted } = store.addTrace(sized(10));
+    expect(evicted.map((e) => e.kind === "trace" && e.doc.id)).toEqual([first.id]);
+    expect(store.bytes).toBe(20);
+    expect(store.evictedMessages).toBe(1);
+
+    // A message larger than the bound on its own still shows, alone.
+    store.addTrace(sized(40));
+    expect(store.entries()).toHaveLength(1);
+    expect(store.bytes).toBe(40);
+    store.clear();
+    expect(store.bytes).toBe(0);
+  });
+
+  it("bounds its bytes by default", () => {
+    expect(MAX_BUFFERED_BYTES).toBe(64 * 1024 * 1024);
   });
 
   it("shrinks to a lower capacity", () => {

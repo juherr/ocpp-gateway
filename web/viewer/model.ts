@@ -202,6 +202,11 @@ export function formatClock(iso: string, utc = false): string {
   return `${pad(h)}:${pad(m)}:${pad(s)}.${pad(ms, 3)}`;
 }
 
+/** A session id short enough for a row: its first 8 characters (a UUID's first group). */
+export function shortId(id: string): string {
+  return id.slice(0, 8);
+}
+
 export function sourceLabel(source: WireSource): string {
   return source.type === "charge-point" ? "charger" : `${source.role} ${source.id}`;
 }
@@ -289,8 +294,24 @@ export type NewGap =
   | { reason: "disconnected"; at: string };
 
 /**
- * The last `capacity` entries (messages and gap markers), in reception order.
- * The oldest are evicted first, and counted.
+ * The page's memory bound besides the message count: the sum of the buffered
+ * frames' `raw` lengths (UTF-16 code units, one byte each for the ASCII most
+ * OCPP traffic is). The parsed payload and the DOM cost a few times more, so
+ * this keeps a tab with large frames well under a gigabyte.
+ */
+export const MAX_BUFFERED_BYTES = 64 * 1024 * 1024;
+
+/** What an entry weighs against the byte bound: its raw frame's length. */
+function weight(entry: Entry): number {
+  if (entry.kind !== "trace") return 0;
+  const { raw } = capturedOf(entry.doc);
+  return typeof raw === "string" ? raw.length : 0;
+}
+
+/**
+ * The last `capacity` entries (messages and gap markers), in reception order,
+ * holding at most `maxBytes` of raw frames — except for a single message
+ * larger than that, kept alone. The oldest are evicted first, and counted.
  */
 export class TraceStore {
   private items: Entry[] = [];
@@ -300,10 +321,17 @@ export class TraceStore {
   private nextKey = 1;
   /** Messages received since the page loaded. */
   received = 0;
-  /** Entries pushed out by the capacity. */
-  evicted = 0;
+  /** Messages pushed out by the bounds: what the page reports as removed. */
+  evictedMessages = 0;
+  /** Gap markers pushed out by the bounds. */
+  evictedGaps = 0;
+  /** The buffered messages' weight against `maxBytes`. */
+  bytes = 0;
 
-  constructor(private capacity: number) {}
+  constructor(
+    private capacity: number,
+    private readonly maxBytes = MAX_BUFFERED_BYTES,
+  ) {}
 
   /** Distinct sessions among the buffered messages. */
   get sessions(): number {
@@ -335,6 +363,7 @@ export class TraceStore {
     this.received++;
     this.byId.set(doc.id, entry);
     this.sessionCounts.set(doc.sessionId, (this.sessionCounts.get(doc.sessionId) ?? 0) + 1);
+    this.bytes += weight(entry);
     this.items.push(entry);
     return { added: entry, evicted: this.trim() };
   }
@@ -406,23 +435,26 @@ export class TraceStore {
     this.head = 0;
     this.byId.clear();
     this.sessionCounts.clear();
+    this.bytes = 0;
     return removed;
   }
 
   private trim(): Entry[] {
     const evicted: Entry[] = [];
-    while (this.size > this.capacity) {
+    while (this.size > this.capacity || (this.bytes > this.maxBytes && this.size > 1)) {
       const entry = this.items[this.head++];
       evicted.push(entry);
       this.forget(entry);
+      if (entry.kind === "trace") this.evictedMessages++;
+      else this.evictedGaps++;
     }
-    this.evicted += evicted.length;
     if (this.head > 1024 && this.head * 2 > this.items.length) this.compact();
     return evicted;
   }
 
   private forget(entry: Entry): void {
     if (entry.kind !== "trace") return;
+    this.bytes -= weight(entry);
     this.byId.delete(entry.doc.id);
     const count = (this.sessionCounts.get(entry.doc.sessionId) ?? 1) - 1;
     if (count > 0) this.sessionCounts.set(entry.doc.sessionId, count);

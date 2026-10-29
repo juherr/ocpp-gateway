@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   type ConnectionState,
   ConnectionMachine,
@@ -30,9 +30,13 @@ interface Harness {
   timers: { fn: () => void; ms: number }[];
   requests: RequestInit[];
   stop: () => void;
+  skipped: () => number;
 }
 
-function run(responses: (() => Response | Promise<Response>)[]): Harness {
+function run(
+  responses: (() => Response | Promise<Response>)[],
+  extra: { onEvent?: (event: StreamEvent) => void } = {},
+): Harness {
   const harness: Harness = {
     states: [],
     events: [],
@@ -41,10 +45,14 @@ function run(responses: (() => Response | Promise<Response>)[]): Harness {
     timers: [],
     requests: [],
     stop: () => undefined,
+    skipped: () => 0,
   };
   const handlers: LiveStreamHandlers = {
     onState: (state, retryInMs) => harness.states.push({ state, retryInMs }),
-    onEvent: (event) => harness.events.push(event),
+    onEvent: (event) => {
+      harness.events.push(event);
+      extra.onEvent?.(event);
+    },
     onLost: (at) => harness.lost.push(at),
     onConnected: (result) => harness.connected.push(result),
   };
@@ -62,6 +70,7 @@ function run(responses: (() => Response | Promise<Response>)[]): Harness {
     schedule: (fn, ms) => harness.timers.push({ fn, ms }),
   });
   harness.stop = stream.stop;
+  harness.skipped = () => stream.skipped;
   return harness;
 }
 
@@ -128,6 +137,42 @@ describe("startLiveStream", () => {
     expect(h.connected.at(-1)).toEqual({ reconnected: true, restarted: true });
     expect(h.states.at(-1)?.state).toBe("connected");
     h.stop();
+  });
+
+  it("skips an event its handler throws on, and keeps reading the stream", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const gap = (n: number) => `event: gap\ndata: {"dropped":${n}}\n\n`;
+    const h = run([() => streamResponse([HELLO, gap(1), gap(2), gap(3)], true)], {
+      onEvent: (event) => {
+        if (event.type === "gap" && event.dropped === 2) throw new TypeError("malformed");
+      },
+    });
+    await settle();
+
+    expect(h.events.map((e) => (e.type === "gap" ? e.dropped : e.type))).toEqual([
+      "hello",
+      1,
+      2,
+      3,
+    ]);
+    expect(h.skipped()).toBe(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(h.states.map((s) => s.state)).toEqual(["connecting", "connected"]);
+    expect(h.requests[0].signal?.aborted).toBe(false);
+    warn.mockRestore();
+    h.stop();
+  });
+
+  it("tears every attempt down before the next one", async () => {
+    const h = run([() => streamResponse([HELLO]), () => streamResponse([HELLO], true)]);
+    await settle();
+    expect(h.requests[0].signal?.aborted).toBe(true);
+
+    h.timers.shift()?.fn();
+    await settle();
+    expect(h.requests[1].signal?.aborted).toBe(false);
+    h.stop();
+    expect(h.requests[1].signal?.aborted).toBe(true);
   });
 
   it("does nothing more once stopped", async () => {

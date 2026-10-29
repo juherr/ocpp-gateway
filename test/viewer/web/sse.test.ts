@@ -100,4 +100,20 @@ describe("SseParser", () => {
       { event: "message", data: "a\nb" },
     ]);
   });
+
+  it("parses a large event pushed in small chunks in linear time", () => {
+    const value = "x".repeat(6 * 1024 * 1024);
+    const stream = `event: trace\ndata: ${value}\n\n`;
+    const events: SseEvent[] = [];
+    const parser = new SseParser((event) => events.push(event));
+    const chunk = 4096;
+    const started = performance.now();
+    for (let i = 0; i < stream.length; i += chunk) parser.push(stream.slice(i, i + chunk));
+    const elapsed = performance.now() - started;
+
+    expect(events).toHaveLength(1);
+    expect(events[0].data.length).toBe(value.length);
+    // Rescanning the buffer on every push takes seconds here.
+    expect(elapsed).toBeLessThan(500);
+  });
 });

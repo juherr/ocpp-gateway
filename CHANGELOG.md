@@ -88,7 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state, reconnects by itself with a growing delay (wrong credentials stop
   it), and marks every interruption as a possible gap, never claiming to
   have recovered it. The browser keeps the last
-  `VIEWER_MAX_BUFFERED_MESSAGES` messages.
+  `VIEWER_MAX_BUFFERED_MESSAGES` messages, and at most 64 MiB of raw frames.
 
 ### Changed
 

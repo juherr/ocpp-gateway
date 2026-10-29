@@ -17,7 +17,8 @@ export interface SseEvent {
 }
 
 export class SseParser {
-  private buffer = "";
+  /** The current line's text so far, one chunk at a time: no line ending in it. */
+  private pending: string[] = [];
   private started = false;
   /** The previous chunk ended with CR: an LF opening this one ends nothing. */
   private skipLeadingLf = false;
@@ -37,25 +38,31 @@ export class SseParser {
       this.started = true;
       if (text[0] === "﻿") text = text.slice(1);
     }
-    this.buffer += text;
-
+    // Only the new text is scanned: the pending chunks hold no line ending, so
+    // a large event pushed in small chunks costs linear time, not quadratic.
     let start = 0;
-    for (let i = 0; i < this.buffer.length; i++) {
-      const char = this.buffer[i];
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
       if (char !== "\n" && char !== "\r") continue;
-      this.line(this.buffer.slice(start, i));
+      let line = text.slice(start, i);
+      if (this.pending.length > 0) {
+        this.pending.push(line);
+        line = this.pending.join("");
+        this.pending = [];
+      }
+      this.line(line);
       if (char === "\r") {
-        if (i + 1 === this.buffer.length) this.skipLeadingLf = true;
-        else if (this.buffer[i + 1] === "\n") i++;
+        if (i + 1 === text.length) this.skipLeadingLf = true;
+        else if (text[i + 1] === "\n") i++;
       }
       start = i + 1;
     }
-    this.buffer = this.buffer.slice(start);
+    if (start < text.length) this.pending.push(text.slice(start));
   }
 
   /** The stream is over: an event without its blank line is never dispatched. */
   end(): void {
-    this.buffer = "";
+    this.pending = [];
     this.skipLeadingLf = false;
     this.reset();
   }
