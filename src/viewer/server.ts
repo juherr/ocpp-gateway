@@ -86,9 +86,10 @@ function requestSource(req: IncomingMessage, clientIpHeader: string | undefined)
 
 /**
  * Starts the viewer's own HTTP server, apart from the OCPP port. Every request
- * is authenticated with HTTP Basic before anything else is looked at (route,
- * method), so nothing, not even a 404, is answered anonymously; a source that
- * failed too often is refused with `429` until its window ends.
+ * is authenticated with HTTP Basic before its route or method is looked at, so
+ * no content, not even a 404, is served without authentication. Only a `400`
+ * (unusable client IP header) and a `429` (a source that failed too often,
+ * until its window ends) come first, and neither carries content.
  */
 export function startViewer(config: ViewerConfig, deps: ViewerDeps): ViewerServer {
   const credentials = { username: config.username, password: config.password };

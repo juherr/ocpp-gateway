@@ -2,3 +2,5 @@ services:
   ocpp-gateway:
     ports:
       - "127.0.0.1:9000:9000"
+      # Live trace viewer, when enabled in .env with VIEWER_HOST=0.0.0.0.
+      - "127.0.0.1:9001:9001"

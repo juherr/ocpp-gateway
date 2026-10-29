@@ -116,7 +116,7 @@ Add a `tenants` map to the routes file (see [`routes.multi-tenant.example.json`]
 - `hostnames` (optional) lists custom domains that select the tenant, e.g. `ocpp.customer-b.example`. A hostname may belong to one tenant only.
 - With `tenants`, the global `default` becomes optional.
 - `trace: false` (optional) keeps the tenant's frames out of the trace archive; see [Choosing what is archived](#choosing-what-is-archived).
-- `viewer: false` (optional) keeps the tenant's frames out of the live trace viewer (upcoming), independently of `trace`. Default `true`; like `trace`, at the root it covers the global scope only, never the tenants. Backend ids are required in every scope once the viewer is enabled.
+- `viewer: false` (optional) keeps the tenant's frames out of the [Live trace viewer](#live-trace-viewer-optional), independently of `trace`. Default `true`; like `trace`, at the root it covers the global scope only, never the tenants. Backend ids are required in every scope once the viewer is enabled.
 
 **Tenant resolution**, from the connection's hostname (lowercased, port and trailing dot ignored):
 
@@ -496,11 +496,12 @@ The gateway refuses to start when the viewer is enabled without a username or a 
 
 **Security.**
 
-- Every route — the page, its assets, `GET /api/config`, even an unknown path — requires HTTP Basic authentication; there is no anonymous access. Credentials are compared in constant time and never logged.
+- Every route — the page, its assets, `GET /api/config`, even an unknown path — requires HTTP Basic authentication: no content is served without it (only a `400` for an unusable client IP header, or a `429` for a blocked source, may come before the credentials are checked, and neither carries content). Credentials are compared in constant time and never logged.
 - A source (IP address) with 10 wrong or malformed attempts within a minute gets `429 Too Many Requests` with `Retry-After` until that minute is over, even with the right credentials. Failed attempts are logged once per source and minute, without the credentials tried.
 - Responses carry `Cache-Control: no-store`, a strict Content Security Policy (no inline or third-party script), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`.
 - Basic authentication sends the password with every request: the viewer listens on loopback by default, and should only be exposed remotely behind an **HTTPS** reverse proxy. Set `VIEWER_CLIENT_IP_HEADER` only when that proxy overwrites the header with the client's address; otherwise a client could pick its own source and evade the attempt limit. Without it, every attempt through the proxy counts as the proxy's address.
-- In a container, set `VIEWER_HOST=0.0.0.0` and publish the port on loopback only, e.g. `127.0.0.1:9001:9001` in a Compose `ports` list.
+- In a container, set `VIEWER_HOST=0.0.0.0` and publish the port on loopback only, e.g. `127.0.0.1:9001:9001` in a Compose `ports` list, as `docker-compose.local.yml` does (set the `VIEWER_*` variables, `VIEWER_HOST=0.0.0.0` included, in `.env`).
+- Once the attempt limit's table of sources is full (1000 sources with a failure in the current minute), new sources share a single bucket that fails closed: a flood of failures from that many distinct addresses — about 1000 within a minute, or a single IPv6 /48 when the viewer is exposed directly, since IPv6 clients count per /64 — can lock out operators connecting from a new address until the minute is over. Sources already in the table keep their own count. Keep the viewer behind the reverse proxy or an IP allow-list.
 - The viewer will show whole OCPP payloads (RFID tags, transaction data…, see [Data sensitivity](#data-sensitivity)): give its credentials to trusted operators only.
 
 ## Development

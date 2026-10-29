@@ -480,7 +480,7 @@ describe("backend ids", () => {
           options,
         ),
       ).toThrow(
-        /route "default" secondary #0 must have an "id" \(required when trace archiving is enabled\)/,
+        /route "default" secondary #0 must have an "id" \(required when trace archiving or the live viewer is enabled\)/,
       );
     });
 

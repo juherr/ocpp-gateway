@@ -44,10 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   archived by default; the choice is made when a charger connects and follows
   routes file hot reloads for new connections. The excluded scopes are logged
   at startup and on reload (`untraced`).
-- Per-tenant switch for the upcoming live trace viewer: `"viewer": false` on a
+- Per-tenant switch for the live trace viewer: `"viewer": false` on a
   tenant of the routes file (or at its root, for connections without a tenant)
   keeps that scope out of the viewer, independently of `"trace"`. Every scope
-  is shown by default. No effect until the viewer ships.
+  is shown by default. No effect until the viewer streams frames.
 - Backends accept a stable `id` (`{ "id": "csms-a", "url": "…" }`), naming the
   logical CSMS in traces instead of its URL. Required on every backend when
   trace archiving is enabled; validated whenever present (format, unique within

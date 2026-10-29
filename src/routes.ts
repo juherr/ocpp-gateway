@@ -85,7 +85,9 @@ function parseUrl(value: unknown, where: string): string {
 /** Accept either a bare URL string or `{ id?, url, appendChargeBoxId? }`. */
 function parseBackend(value: unknown, where: string, options: RouteTableOptions): Backend {
   const missingId = () =>
-    new Error(`${where} must have an "id" (required when trace archiving is enabled)`);
+    new Error(
+      `${where} must have an "id" (required when trace archiving or the live viewer is enabled)`,
+    );
   if (typeof value === "string") {
     if (options.requireBackendIds) throw missingId();
     return { url: parseUrl(value, where), appendChargeBoxId: true };

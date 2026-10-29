@@ -9,8 +9,13 @@ import { startViewer } from "./viewer/server";
 
 const log = createLogger("proxy");
 
-/** Hard stop if a graceful shutdown hangs (plus the trace flush, when archiving). */
+/**
+ * Hard stop if a graceful shutdown hangs (plus the trace flush, when
+ * archiving, and the viewer's close, when enabled).
+ */
 const SHUTDOWN_TIMEOUT_MS = 5000;
+/** Extra shutdown budget for the viewer to end its streams and connections. */
+const VIEWER_CLOSE_TIMEOUT_MS = 1000;
 /** How long exiting waits for pending error reports to be sent. */
 const ERROR_REPORT_FLUSH_TIMEOUT_MS = 2000;
 
@@ -96,7 +101,9 @@ async function main() {
     // A shutdown that hangs is forced, still sending pending error reports.
     setTimeout(
       () => void exit(1),
-      SHUTDOWN_TIMEOUT_MS + (archive ? TRACE_FLUSH_TIMEOUT_MS : 0),
+      SHUTDOWN_TIMEOUT_MS +
+        (archive ? TRACE_FLUSH_TIMEOUT_MS : 0) +
+        (viewer ? VIEWER_CLOSE_TIMEOUT_MS : 0),
     ).unref();
     // close() ends every session synchronously, so their last trace outcomes
     // are already reported when the archive starts flushing. A repeated
