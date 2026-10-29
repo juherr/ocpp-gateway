@@ -4,6 +4,7 @@ import { configureLogger, createLogger } from "./logger";
 import { startProxy } from "./proxy";
 import { RouteStore } from "./routes";
 import { TRACE_FLUSH_TIMEOUT_MS, type TraceArchive, openTraceArchive } from "./trace/archive";
+import { LiveTraceHub } from "./viewer/hub";
 import { PLACEHOLDER_ASSETS } from "./viewer/placeholder";
 import { startViewer } from "./viewer/server";
 
@@ -81,7 +82,17 @@ async function main() {
     }
   }
 
-  const gateway = startProxy(config, routes, { traceSink: archive?.sink });
+  // The live viewer's stream: attached to every viewed session, it only does
+  // work while a browser is connected.
+  const hub =
+    config.viewer &&
+    new LiveTraceHub({
+      maxClients: config.viewer.maxClients,
+      maxBufferedMessages: config.viewer.maxBufferedMessages,
+      maxMessageBytes: config.maxMessageBytes,
+    });
+
+  const gateway = startProxy(config, routes, { traceSink: archive?.sink, liveSink: hub });
   // A gateway that cannot listen (port taken…) has nothing left to run: the
   // proxy has logged and reported the error, exit non-zero once it is sent.
   const exitOnListenError = () => void exit(1);
@@ -89,7 +100,9 @@ async function main() {
   gateway.server.once("listening", () => gateway.server.off("error", exitOnListenError));
 
   // Its own port, after the gateway; it has logged and reported a listen error.
-  const viewer = config.viewer && startViewer(config.viewer, { assets: PLACEHOLDER_ASSETS });
+  const viewer =
+    config.viewer &&
+    startViewer(config.viewer, { assets: PLACEHOLDER_ASSETS, events: hub?.handle });
   if (viewer) {
     viewer.server.once("error", exitOnListenError);
     viewer.server.once("listening", () => viewer.server.off("error", exitOnListenError));
@@ -111,6 +124,8 @@ async function main() {
     // are idempotent). Errors reported while closing are sent last, even if
     // a close fails.
     const closing = gateway.close();
+    // After the sessions, so their last delivery updates are streamed too.
+    hub?.close();
     void Promise.allSettled([closing, archive?.close(), viewer?.close()]).then(() => exit(0));
   };
 

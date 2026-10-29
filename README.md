@@ -480,7 +480,7 @@ Traces contain whole OCPP payloads: RFID tags (`idTag`), transaction and meter d
 
 ## Live trace viewer (optional)
 
-With `VIEWER_ENABLED=true`, the gateway starts a second, read-only HTTP server for operators, apart from the OCPP port: by default on `127.0.0.1:9001`. It does not need MongoDB and does not enable trace archiving, and charger traffic is forwarded exactly as without it. This release serves a placeholder page; the viewer UI and the live stream of OCPP frames follow.
+With `VIEWER_ENABLED=true`, the gateway starts a second, read-only HTTP server for operators, apart from the OCPP port: by default on `127.0.0.1:9001`. It does not need MongoDB and does not enable trace archiving, and charger traffic is forwarded exactly as without it. It streams the OCPP frames live (below); this release serves a placeholder page, the viewer UI follows.
 
 ```bash
 VIEWER_ENABLED=true \
@@ -493,6 +493,16 @@ ROUTES_FILE=./routes.json npm start
 The gateway refuses to start when the viewer is enabled without a username or a password, when `VIEWER_PORT` equals `PORT`, or when the viewer port cannot be bound. See [Configuration](#configuration) for every `VIEWER_*` variable.
 
 **Backend ids are required**, as with archiving: the viewer names each CSMS by its backend `id`, so with the viewer enabled the gateway refuses to start if a backend has no `id`, and a hot reload that removes one is rejected. `viewer: false` keeps a scope out of the viewer (see [Multi-tenant routing](#multi-tenant-routing)).
+
+**The live stream.** `GET /events` (authenticated like every route) is a [Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html) stream of the frames received from then on, by chargers, primary and secondary CSMS, of every scope not set to `viewer: false`:
+
+- `hello` — sent first: `{ serverTime, startedAt, maxBufferedMessages }` (ISO timestamps; `startedAt` is when this gateway instance started).
+- `trace` — one per received frame, however many destinations it was routed to: the trace document as JSON (`id`, `kind`, `tenantId`, `sessionId`, `chargePointId`, `seq`, `receivedAt`, `deliveries`, and the Open OCPP Trace v1.1 record under `trace`, or `frame` for a frame v1.1 cannot represent). Secondary CSMS responses are included, with `meta.gateway.ignored`. Each `trace` event has an SSE `id`, increasing across the whole instance.
+- `delivery` — `{ id, index, delivery }`: a newer state of `deliveries[index]` of the trace document `id` (`queued` → `submitted` → `written`, `failed` or `dropped`). `written` means the WebSocket wrote the frame to its socket, **not** that the CSMS or the charger processed it: only an OCPP response proves that. Updates go to every connected client, including for documents a client never received (it connected later, or dropped them): a client must ignore a `delivery` whose `id` it does not know.
+- `gap` — `{ dropped }`: this client missed that many `trace`/`delivery` events, see below.
+- A `: ping` comment every 15 s keeps idle connections open through proxies.
+
+There is no history: a client only sees what is received while it is connected, and `Last-Event-ID` is ignored, so a reconnecting client has a gap the stream cannot fill. While no client is connected, the viewer adds no capture work. A client that does not keep up loses events instead of slowing the gateway: once 4 × `MAX_MESSAGE_BYTES` are waiting to be sent to it, or when an event would take what is waiting past 11 × `MAX_MESSAGE_BYTES`, the event is dropped (counted, then reported by a `gap` event when it catches up). An event carries its frame twice, escaped: usually 2 to 3 times the frame's size, up to about 6 times for a frame of control characters, so every frame still reaches a client that keeps up. A client is disconnected at its 1000th drop in a row, or once it has been dropping for 30 s. At most `VIEWER_MAX_CLIENTS` streams run at once (the next gets `503`), so the stream holds at most `VIEWER_MAX_CLIENTS` × 11 × `MAX_MESSAGE_BYTES` in memory (55 MiB with the defaults). The counters `sent` (events written), `dropped` and `endedSlow` (clients disconnected for being too slow) are logged at shutdown.
 
 **Security.**
 
