@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { Agent, request } from "node:http";
+import { Agent, type IncomingMessage, request } from "node:http";
 import { type AddressInfo, connect, createServer as createTcpServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ViewerConfig } from "../../src/config";
@@ -398,6 +398,36 @@ describe("viewer server", () => {
       } finally {
         agent.destroy();
       }
+    });
+
+    it("close() resolves promptly with a response still streaming", async () => {
+      const port = await start(
+        {},
+        {
+          events: (_req, res) => {
+            res.writeHead(200, { "Content-Type": "text/event-stream" });
+            res.write(": open\n\n");
+          },
+        },
+      );
+      const req = request({
+        host: "127.0.0.1",
+        port,
+        path: "/events",
+        headers: auth(),
+        agent: false,
+      });
+      req.end();
+      const [res] = (await once(req, "response")) as [IncomingMessage];
+      await once(res, "data");
+      // The client sees the stream cut ("aborted"), not a clean end.
+      res.on("error", () => undefined);
+      const ended = new Promise((resolve) => res.once("close", resolve));
+
+      const started = Date.now();
+      await viewer?.close();
+      expect(Date.now() - started).toBeLessThan(1000);
+      await ended;
     });
 
     it("close() is idempotent", async () => {
