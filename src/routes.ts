@@ -169,12 +169,11 @@ function checkBackendIds(scope: RouteScope, label: string): void {
   }
 }
 
+/** A boolean switch of a scope, turning one feature on or off for its sessions. */
+export type ScopeFlag = "trace" | "viewer";
+
 /** A boolean switch of a scope (`trace`, `viewer`); default `true`. */
-function parseScopeFlag(
-  value: Record<string, unknown>,
-  name: "trace" | "viewer",
-  path: string,
-): boolean {
+function parseScopeFlag(value: Record<string, unknown>, name: ScopeFlag, path: string): boolean {
   const flag = value[name] === undefined ? true : value[name];
   if (typeof flag !== "boolean") {
     throw new Error(`"${path}${name}" must be a boolean`);
@@ -296,34 +295,24 @@ export function resolveRoute(
 }
 
 /**
- * Whether trace archiving records a session of this tenant (`null`: the
- * global scope). Each scope has its own switch: the global one never applies
- * to tenants.
+ * Whether a scope switch (`trace`: archiving records it, `viewer`: the live
+ * viewer shows it) is on for a session of this tenant (`null`: the global
+ * scope). Each scope has its own switch: the global one never applies to
+ * tenants. An unknown tenant counts as on.
  */
-export function isTraced(table: RouteTable, tenantId: TenantId | null): boolean {
+export function isScopeEnabled(
+  table: RouteTable,
+  flag: ScopeFlag,
+  tenantId: TenantId | null,
+): boolean {
   const scope = tenantId === null ? table : table.tenants.get(tenantId);
-  return scope?.trace ?? true;
+  return scope?.[flag] ?? true;
 }
 
-/** The scopes excluded from trace archiving (`null`: the global scope), for logs. */
-export function untracedScopes(table: RouteTable): (TenantId | null)[] {
-  const tenants = [...table.tenants].filter(([, scope]) => !scope.trace).map(([id]) => id);
-  return table.trace ? tenants : [null, ...tenants];
-}
-
-/**
- * Whether the live viewer shows a session of this tenant (`null`: the global
- * scope). Like `trace`, each scope has its own switch.
- */
-export function isViewed(table: RouteTable, tenantId: TenantId | null): boolean {
-  const scope = tenantId === null ? table : table.tenants.get(tenantId);
-  return scope?.viewer ?? true;
-}
-
-/** The scopes excluded from the live viewer (`null`: the global scope), for logs. */
-export function unviewedScopes(table: RouteTable): (TenantId | null)[] {
-  const tenants = [...table.tenants].filter(([, scope]) => !scope.viewer).map(([id]) => id);
-  return table.viewer ? tenants : [null, ...tenants];
+/** The scopes whose switch is off (`null`: the global scope, first), for logs. */
+export function disabledScopes(table: RouteTable, flag: ScopeFlag): (TenantId | null)[] {
+  const tenants = [...table.tenants].filter(([, scope]) => !scope[flag]).map(([id]) => id);
+  return table[flag] ? tenants : [null, ...tenants];
 }
 
 /**
@@ -407,19 +396,19 @@ export class RouteStore {
   }
 
   isTraced(tenantId: TenantId | null): boolean {
-    return isTraced(this.table, tenantId);
+    return isScopeEnabled(this.table, "trace", tenantId);
   }
 
   untracedScopes(): (TenantId | null)[] {
-    return untracedScopes(this.table);
+    return disabledScopes(this.table, "trace");
   }
 
   isViewed(tenantId: TenantId | null): boolean {
-    return isViewed(this.table, tenantId);
+    return isScopeEnabled(this.table, "viewer", tenantId);
   }
 
   unviewedScopes(): (TenantId | null)[] {
-    return unviewedScopes(this.table);
+    return disabledScopes(this.table, "viewer");
   }
 
   /** The tenant that explicitly claims `hostname` (a custom domain), if any. */
@@ -435,8 +424,8 @@ export class RouteStore {
         path: this.path,
         chargers: this.table.chargers.size,
         tenants: this.table.tenants.size,
-        untraced: untracedScopes(this.table),
-        unviewed: unviewedScopes(this.table),
+        untraced: disabledScopes(this.table, "trace"),
+        unviewed: disabledScopes(this.table, "viewer"),
       });
     } catch (err) {
       log.error(

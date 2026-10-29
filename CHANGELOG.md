@@ -75,7 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Server-Sent Events stream of every frame received while a browser is
   connected (charger, primary and secondary CSMS), shown once whatever the
   number of destinations, followed by its delivery updates. There is no
-  history and no MongoDB involved. A browser that falls behind loses events,
+  history and no MongoDB involved: events carry no id, and `Last-Event-ID`
+  resumes nothing. A browser that falls behind loses events,
   reported by a `gap` event, and is disconnected if it does not catch up;
   each stream's memory is bounded, `VIEWER_MAX_CLIENTS` streams at most.
   Forwarding never waits for a browser.
@@ -107,6 +108,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `debug`, sparing the forwarding path that work on large frames.
 - The Docker image and `npm start` run Node with `--enable-source-maps`, so
   stack traces (in logs and in Sentry) point to the TypeScript sources.
+- A `.dockerignore` keeps `.git`, `node_modules`, build output and local
+  secrets (`.env`, `routes.json`, Wrangler files) out of the Docker build
+  context, for Compose and the Cloudflare container alike.
 - On shutdown, charger sessions are torn down immediately instead of after
   each charger's close handshake, so upstream links close sooner.
 

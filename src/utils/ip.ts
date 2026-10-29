@@ -1,4 +1,28 @@
+import type { IncomingMessage } from "node:http";
 import { isIP } from "node:net";
+import { readSingleHeader } from "../tenants";
+
+/** Where a request comes from, as read and as counted. */
+export interface RequestSource {
+  /** The client IP header's single value when one is configured, otherwise the socket address. */
+  address: string | null | undefined;
+  /** The key per-source limits count it under; `null` (none, or not a bare IP) must fail closed. */
+  source: string | null;
+}
+
+/**
+ * The client of a request: the client IP header when one is configured
+ * (exactly one value, a bare IP address), otherwise the socket address.
+ */
+export function requestSource(
+  req: Pick<IncomingMessage, "rawHeaders" | "socket">,
+  clientIpHeader: string | undefined,
+): RequestSource {
+  const address = clientIpHeader
+    ? readSingleHeader(req.rawHeaders, clientIpHeader)
+    : req.socket.remoteAddress;
+  return { address, source: address ? clientSource(address) : null };
+}
 
 /**
  * The key a client is counted under by per-source limits, or `null` when

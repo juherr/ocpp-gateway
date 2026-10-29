@@ -8,12 +8,6 @@ export interface SseEvent {
   /** The `event:` field, `"message"` when absent. */
   event: string;
   data: string;
-  /**
-   * This event's own `id:` field. Unlike the browser's `lastEventId`, it is
-   * not carried over to later events: the viewer's stream only numbers trace
-   * events.
-   */
-  id?: string;
 }
 
 export class SseParser {
@@ -24,7 +18,6 @@ export class SseParser {
   private skipLeadingLf = false;
   private data: string[] = [];
   private eventType = "";
-  private eventId: string | undefined;
 
   constructor(private readonly onEvent: (event: SseEvent) => void) {}
 
@@ -74,15 +67,14 @@ export class SseParser {
     const field = colon === -1 ? line : line.slice(0, colon);
     let value = colon === -1 ? "" : line.slice(colon + 1);
     if (value[0] === " ") value = value.slice(1);
+    // Other fields (`id`, `retry`) are ignored: the stream carries no history to resume.
     if (field === "data") this.data.push(value);
     else if (field === "event") this.eventType = value;
-    else if (field === "id" && !value.includes("\0")) this.eventId = value;
   }
 
   private dispatch(): void {
     if (this.data.length > 0) {
       const event: SseEvent = { event: this.eventType || "message", data: this.data.join("\n") };
-      if (this.eventId !== undefined) event.id = this.eventId;
       this.reset();
       this.onEvent(event);
       return;
@@ -93,6 +85,5 @@ export class SseParser {
   private reset(): void {
     this.data = [];
     this.eventType = "";
-    this.eventId = undefined;
   }
 }

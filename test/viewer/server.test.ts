@@ -179,12 +179,6 @@ describe("viewer server", () => {
       expect(css.status).toBe(200);
       expect(css.headers["content-type"]).toBe("text/css; charset=utf-8");
       expect(css.body).toBe(ASSETS.css);
-
-      const settings = await get(port, "/api/config", { headers: auth() });
-      expect(settings.status).toBe(200);
-      expect(settings.headers["content-type"]).toBe("application/json; charset=utf-8");
-      expect(JSON.parse(settings.body)).toEqual({ maxBufferedMessages: 1234 });
-      expectSecurityHeaders(settings);
     });
 
     it("ignores the query string", async () => {
@@ -193,7 +187,8 @@ describe("viewer server", () => {
       expect((await get(port, "/viewer.js?v=1", { headers: auth() })).body).toBe(ASSETS.js);
     });
 
-    it.each(["/nope", "/index.html", "//viewer.js", "/viewer.js/", "/events"])(
+    // `/api/config` too: the capacity comes from the stream's `hello` event.
+    it.each(["/nope", "/index.html", "//viewer.js", "/viewer.js/", "/events", "/api/config"])(
       "answers %s with 404 once authenticated",
       async (path) => {
         const port = await start();

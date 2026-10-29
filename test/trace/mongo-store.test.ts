@@ -32,7 +32,7 @@ function traceDocs(...frames: [source: "charger" | "primary", raw: string][]): T
       primaryId: "csms-main",
       secondaryIds: [],
     },
-    sink,
+    [sink],
     { now: () => AT, newId: randomUUID },
   );
   for (const [source, raw] of frames) {

@@ -1,0 +1,22 @@
+# The Dockerfile copies an explicit list of build inputs; this keeps the rest
+# (VCS data, dependencies, build output, local secrets and scratch files) out
+# of the build context sent to Docker, for Compose and the Cloudflare
+# container build (deploy/cloudflare, context "../..") alike.
+.git
+**/node_modules
+dist
+coverage
+.context
+.codegraph
+.serena
+**/*.log
+
+# Local configuration and secrets.
+.env
+.env.*
+!.env.example
+routes.json
+deploy/cloudflare/.wrangler
+deploy/cloudflare/.dev.vars
+deploy/cloudflare/wrangler.local.jsonc
+deploy/cloudflare/secrets.json

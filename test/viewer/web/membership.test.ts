@@ -5,12 +5,15 @@ import {
   filterPredicate,
   listedEntries,
   membershipChanges,
-  toJsonl,
+  jsonlLines,
   type TraceEntry,
   TraceStore,
   type WireTraceDocument,
 } from "../../../web/viewer/model";
 import { callDoc, delivery, withStatuses } from "./fixtures";
+
+/** The export as one string. */
+const toJsonl = (...args: Parameters<typeof jsonlLines>) => jsonlLines(...args).join("");
 
 /**
  * What the page does with a delivery update under a delivery filter: the
@@ -49,7 +52,7 @@ describe("membershipChanges", () => {
   it("removes a listed message that no longer passes the filter, while live", () => {
     const { store, docs, visible, isShown, update } = setUp(["queued", "queued"], "queued");
     const changed = update(docs[1], "written");
-    expect(membershipChanges(store.entries(), isShown, [changed], visible, false)).toEqual({
+    expect(membershipChanges(store.entries(), isShown, [changed], visible)).toEqual({
       insert: [],
       remove: [changed.key],
     });
@@ -61,7 +64,7 @@ describe("membershipChanges", () => {
       "written",
     );
     const changed = update(docs[1], "written");
-    expect(membershipChanges(store.entries(), isShown, [changed], visible, false)).toEqual({
+    expect(membershipChanges(store.entries(), isShown, [changed], visible)).toEqual({
       insert: [{ entry: changed, beforeKey: keyOf(docs[3]) }],
       remove: [],
     });
@@ -70,21 +73,18 @@ describe("membershipChanges", () => {
   it("appends a message after the last row", () => {
     const { store, docs, visible, isShown, update } = setUp(["written", "queued"], "written");
     const changed = update(docs[1], "written");
-    expect(membershipChanges(store.entries(), isShown, [changed], visible, false).insert).toEqual([
+    expect(membershipChanges(store.entries(), isShown, [changed], visible).insert).toEqual([
       { entry: changed, beforeKey: null },
     ]);
   });
 
-  it("changes nothing while paused, then applies the change on resume", () => {
+  // Paused, the page does not ask: its list stays frozen until the resume.
+  it("applies a change made while paused once resumed", () => {
     const { store, docs, visible, isShown, update } = setUp(["queued", "queued"], "queued");
     store.pause();
     const changed = update(docs[1], "written");
-    expect(membershipChanges(store.entries(), isShown, [changed], visible, true)).toEqual({
-      insert: [],
-      remove: [],
-    });
     store.resume();
-    expect(membershipChanges(store.entries(), isShown, [changed], visible, false)).toEqual({
+    expect(membershipChanges(store.entries(), isShown, [changed], visible)).toEqual({
       insert: [],
       remove: [changed.key],
     });
@@ -97,7 +97,7 @@ describe("membershipChanges", () => {
     );
     const b = update(docs[2], "written");
     const a = update(docs[1], "written");
-    expect(membershipChanges(store.entries(), isShown, [b, a], visible, false).insert).toEqual([
+    expect(membershipChanges(store.entries(), isShown, [b, a], visible).insert).toEqual([
       { entry: a, beforeKey: keyOf(docs[3]) },
       { entry: b, beforeKey: keyOf(docs[3]) },
     ]);
@@ -110,9 +110,7 @@ describe("membershipChanges", () => {
     );
     const entering = update(docs[0], "submitted");
     const leaving = update(docs[1], "written");
-    expect(
-      membershipChanges(store.entries(), isShown, [entering, leaving], visible, false),
-    ).toEqual({
+    expect(membershipChanges(store.entries(), isShown, [entering, leaving], visible)).toEqual({
       insert: [{ entry: entering, beforeKey: keyOf(docs[2]) }],
       remove: [leaving.key],
     });
@@ -123,7 +121,7 @@ describe("membershipChanges", () => {
     const evicted = update(docs[0], "written");
     store.addTrace(withStatuses(callDoc(), "queued"));
     expect(store.get(docs[0].id)).toBeUndefined();
-    expect(membershipChanges(store.entries(), isShown, [evicted], visible, false)).toEqual({
+    expect(membershipChanges(store.entries(), isShown, [evicted], visible)).toEqual({
       insert: [],
       remove: [],
     });
@@ -137,7 +135,7 @@ describe("membershipChanges", () => {
     const held = update(doc, "written");
     expect(store.isPending(held)).toBe(true);
     // Even evaluated as live: only listed messages come or go.
-    expect(membershipChanges(store.entries(), isShown, [held], visible, false)).toEqual({
+    expect(membershipChanges(store.entries(), isShown, [held], visible)).toEqual({
       insert: [],
       remove: [],
     });
@@ -151,11 +149,8 @@ describe("listedEntries", () => {
       "queued",
     );
     store.pause();
-    const changed = update(docs[1], "written");
-    // Paused: the row stays listed.
-    expect(membershipChanges(store.entries(), isShown, [changed], visible, true).remove).toEqual(
-      [],
-    );
+    // Paused: the page computes no membership change, so the row stays listed.
+    update(docs[1], "written");
     const exported = listedEntries(store.entries(), isShown);
     expect(exported.map((e) => e.key)).toEqual(docs.map(keyOf));
     expect(store.entries().filter(visible)).toHaveLength(2);

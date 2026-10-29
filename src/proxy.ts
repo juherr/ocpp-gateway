@@ -10,7 +10,7 @@ import { type SessionKey, SessionRegistry } from "./sessions";
 import { HostnameTenantResolver, type TenantResolver, readSingleHeader } from "./tenants";
 import type { TraceSink } from "./trace/writer";
 import { OCPP_SUBPROTOCOLS } from "./types";
-import { clientSource } from "./utils/ip";
+import { requestSource } from "./utils/ip";
 import { redactUrl } from "./utils/url";
 
 const log = createLogger("proxy");
@@ -49,11 +49,9 @@ export interface ProxyOptions {
  */
 export function startProxy(config: Config, routes: RouteStore, options: ProxyOptions = {}) {
   // Traces name each CSMS by its backend id: every route must have them.
-  if (options.traceSink && !routes.requiresBackendIds) {
-    throw new Error("trace archiving needs a route store loaded with requireBackendIds");
-  }
-  if (options.liveSink && !routes.requiresBackendIds) {
-    throw new Error("the live viewer needs a route store loaded with requireBackendIds");
+  if ((options.traceSink || options.liveSink) && !routes.requiresBackendIds) {
+    const feature = options.traceSink ? "trace archiving" : "the live viewer";
+    throw new Error(`${feature} needs a route store loaded with requireBackendIds`);
   }
   const tenants =
     options.tenants ??
@@ -124,10 +122,7 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
     // Fail closed too: a client IP that is missing, duplicated or not a bare
     // address must never land chargers in a shared bucket, nor in one per
     // connection.
-    const address = config.clientIpHeader
-      ? readSingleHeader(req.rawHeaders, config.clientIpHeader)
-      : req.socket.remoteAddress;
-    const source = address ? clientSource(address) : null;
+    const { address, source } = requestSource(req, config.clientIpHeader);
     if (source === null) {
       rejections.record("client-ip-header", req.socket.remoteAddress ?? "unknown");
       refuse(ws, req.socket, 1008, "Missing or ambiguous client IP");

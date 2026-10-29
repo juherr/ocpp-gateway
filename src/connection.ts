@@ -3,13 +3,8 @@ import WebSocket from "ws";
 import { createLogger } from "./logger";
 import { type Route, buildTargetUrl } from "./routes";
 import { type SessionKey, formatSessionKey } from "./sessions";
-import {
-  type DeliveryTracker,
-  type FrameEncoding,
-  SessionTracer,
-  type TraceSinks,
-  toSinkList,
-} from "./trace/session-tracer";
+import { type DeliveryTracker, type FrameEncoding, SessionTracer } from "./trace/session-tracer";
+import type { TraceSink } from "./trace/writer";
 import { errorMessage } from "./utils/errors";
 import { OCPP_SUBPROTOCOLS } from "./types";
 import { BoundedQueue } from "./utils/bounded-queue";
@@ -90,7 +85,7 @@ export class ChargerConnection {
     private readonly maxPayload: number,
     private readonly onEnd: () => void,
     /** Where this session's frames are traced (archive, live viewer); none: not traced. */
-    private readonly traceSinks?: TraceSinks,
+    private readonly traceSinks: readonly TraceSink[] = [],
     /** Called once the primary link opens: the session is no longer pending. */
     private readonly onPrimaryOpen?: () => void,
   ) {
@@ -143,8 +138,7 @@ export class ChargerConnection {
     }
 
     // Destinations are the secondaries actually set up, in forwarding order.
-    const sinks = toSinkList(this.traceSinks);
-    if (sinks.length > 0) {
+    if (this.traceSinks.length > 0) {
       this.tracer = new SessionTracer(
         {
           sessionId: this.sessionId,
@@ -154,7 +148,7 @@ export class ChargerConnection {
           primaryId: this.route.primary.id!,
           secondaryIds: this.secondaries.map((sec) => sec.id),
         },
-        sinks,
+        this.traceSinks,
       );
     }
 
