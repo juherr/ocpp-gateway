@@ -16,7 +16,10 @@ import {
   formatClock,
   type GapEntry,
   isFilterActive,
+  listedEntries,
+  membershipChanges,
   NONE,
+  type ObservedValues,
   RenderQueue,
   shortId,
   sourceLabel,
@@ -148,17 +151,38 @@ function removeRow(key: number): void {
   messageRows.delete(key);
 }
 
-/** Lists `store.entries()` again through the filters, from scratch. */
+/**
+ * Lists `store.entries()` again through the filters, keeping the rows
+ * already built (refreshed if their entry changed) and creating the others.
+ */
 function rebuild(): void {
-  pending.take();
+  const { changed } = pending.take();
   refilter.clear();
+  const built = new Map(rows);
   rows.clear();
   messageRows.clear();
   const fragment = document.createDocumentFragment();
   for (const entry of store.entries()) {
-    if (isVisible(entry)) fragment.append(addRow(entry));
+    if (!isVisible(entry)) continue;
+    const row = built.get(entry.key);
+    if (!row) {
+      fragment.append(addRow(entry));
+      continue;
+    }
+    rows.set(entry.key, row);
+    if (entry.kind === "trace") messageRows.add(entry.key);
+    fragment.append(row);
+  }
+  for (const entry of changed) {
+    const row = built.get(entry.key);
+    if (row && rows.has(entry.key)) fillRow(row, entry);
   }
   ui.rows.replaceChildren(fragment);
+  // A selected message evicted in the same frame: its removal was not drawn.
+  if (selected && store.get(selected.doc.id) !== selected) {
+    selected = undefined;
+    showNoSelection();
+  }
 }
 
 /**
@@ -167,36 +191,23 @@ function rebuild(): void {
  * rows only change state: they wait for the resume to come or go.
  */
 function applyRefilter(): void {
+  // Paused, the changed messages wait for the first frame after the resume.
   if (refilter.size === 0 || store.paused) return;
-  const listed = store.entries();
-  for (const entry of refilter.values()) {
-    if (store.get(entry.doc.id) !== entry || store.isPending(entry)) continue;
-    const shown = rows.has(entry.key);
-    if (isVisible(entry) === shown) continue;
-    if (shown) {
-      removeRow(entry.key);
-      continue;
-    }
-    addRow(entry, nextRowAfter(listed, entry.key));
-  }
+  const { insert, remove } = membershipChanges(
+    store.entries(),
+    isListed,
+    refilter.values(),
+    isVisible,
+    store.paused,
+  );
   refilter.clear();
+  for (const key of remove) removeRow(key);
+  for (const { entry, beforeKey } of insert) {
+    addRow(entry, beforeKey === null ? null : (rows.get(beforeKey) ?? null));
+  }
 }
 
-/** The first row after `key` in reception order, `null` when none (append). */
-function nextRowAfter(listed: readonly Entry[], key: number): HTMLTableRowElement | null {
-  let low = 0;
-  let high = listed.length;
-  while (low < high) {
-    const mid = (low + high) >>> 1;
-    if (listed[mid].key <= key) low = mid + 1;
-    else high = mid;
-  }
-  for (let i = low; i < listed.length; i++) {
-    const row = rows.get(listed[i].key);
-    if (row) return row;
-  }
-  return null;
-}
+const isListed = (key: number): boolean => rows.has(key);
 
 function flush(): void {
   frame = undefined;
@@ -278,7 +289,19 @@ function readFilter(): FilterState {
   };
 }
 
+/** How long typing in a text filter waits before the list follows. */
+const TYPING_DELAY_MS = 200;
+let typingTimer: ReturnType<typeof setTimeout> | undefined;
+
+function filterTyped(): void {
+  clearTimeout(typingTimer);
+  typingTimer = setTimeout(filtersChanged, TYPING_DELAY_MS);
+}
+
+/** Applies the filters now, a pending typing delay included. */
 function filtersChanged(): void {
+  clearTimeout(typingTimer);
+  typingTimer = undefined;
   filter = readFilter();
   visible = filterPredicate(filter);
   rebuildDue = true;
@@ -296,36 +319,70 @@ function resetFilters(): void {
 
 let optionsVersion = -1;
 
+/** Each control offering observed values, with how its options are refilled. */
+const optionLists = new Map<HTMLElement, (observed: ObservedValues) => void>([
+  [
+    filterUi.tenant,
+    (observed) =>
+      fillSelect(
+        filterUi.tenant,
+        observed.tenants.map((t) => (t === null ? [NO_TENANT, "No tenant"] : [t, t])),
+      ),
+  ],
+  [
+    filterUi.action,
+    (observed) =>
+      fillSelect(
+        filterUi.action,
+        observed.actions.map((a) => [a, a]),
+      ),
+  ],
+  [
+    filterUi.source,
+    (observed) =>
+      fillSelect(
+        filterUi.source,
+        observed.sources.map((s) => [s, s]),
+      ),
+  ],
+  [
+    filterUi.chargePointId,
+    (observed) =>
+      filterUi.chargePointOptions.replaceChildren(
+        ...observed.chargePointIds.map((id) => {
+          const option = el("option");
+          option.value = id;
+          return option;
+        }),
+      ),
+  ],
+]);
+/** Controls skipped while focused: refreshed when they lose the focus. */
+const staleOptions = new Set<HTMLElement>();
+
 /**
  * The option lists, from the buffered messages' values, refreshed only when
- * those change and never under the pointer of an open list. A selected
- * value no longer observed stays selectable.
+ * those change and never under the focus (an open list, typing in the charge
+ * point field). A selected value no longer observed stays selectable.
  */
 function refreshOptions(): void {
   if (store.observedVersion === optionsVersion) return;
-  const controls = [filterUi.tenant, filterUi.action, filterUi.source];
-  if (controls.includes(document.activeElement as HTMLSelectElement)) return;
   optionsVersion = store.observedVersion;
   const observed = store.observed();
-  fillSelect(
-    filterUi.tenant,
-    observed.tenants.map((t) => (t === null ? [NO_TENANT, "No tenant"] : [t, t])),
-  );
-  fillSelect(
-    filterUi.action,
-    observed.actions.map((a) => [a, a]),
-  );
-  fillSelect(
-    filterUi.source,
-    observed.sources.map((s) => [s, s]),
-  );
-  filterUi.chargePointOptions.replaceChildren(
-    ...observed.chargePointIds.map((id) => {
-      const option = el("option");
-      option.value = id;
-      return option;
-    }),
-  );
+  for (const [control, fill] of optionLists) {
+    if (control === document.activeElement) {
+      staleOptions.add(control);
+      continue;
+    }
+    staleOptions.delete(control);
+    fill(observed);
+  }
+}
+
+for (const [control, fill] of optionLists) {
+  control.addEventListener("blur", () => {
+    if (staleOptions.delete(control)) fill(store.observed());
+  });
 }
 
 function fillSelect(select: HTMLSelectElement, options: [value: string, label: string][]): void {
@@ -348,7 +405,7 @@ function fillSelect(select: HTMLSelectElement, options: [value: string, label: s
 
 for (const control of Object.values(filterUi)) {
   if (control instanceof HTMLSelectElement) control.addEventListener("change", filtersChanged);
-  else if (control instanceof HTMLInputElement) control.addEventListener("input", filtersChanged);
+  else if (control instanceof HTMLInputElement) control.addEventListener("input", filterTyped);
 }
 ui.filterReset.addEventListener("click", resetFilters);
 
@@ -410,7 +467,8 @@ function exportJsonl(kind: "trace" | "frame", entries: readonly Entry[], what: s
 }
 
 byId("export-filtered").addEventListener("click", () =>
-  exportJsonl("trace", store.entries().filter(isVisible), "trace records (filtered)"),
+  // Exactly the listed rows: the frozen list while paused, not the filters evaluated again.
+  exportJsonl("trace", listedEntries(store.entries(), isListed), "trace records (filtered)"),
 );
 byId("export-all").addEventListener("click", () =>
   exportJsonl("trace", store.entries(), "trace records"),
@@ -452,11 +510,13 @@ function fillRow(row: HTMLTableRowElement, entry: Entry): void {
   row.setAttribute("aria-selected", String(entry === selected));
   const action = el("span", s.correlated ? "action correlated" : "action", s.action);
   if (s.correlated) action.title = "Action of the CALL this response answers";
+  // Each part wraps as a whole; the line breaks only between parts.
+  const part = (className: string, value: string) => el("span", className, value);
   const details =
     s.type === "unparsed"
-      ? `unparsed: ${s.reason ?? NONE}`
-      : `${s.messageId} · OCPP ${s.ocppVersion}`;
-  const session = el("span", "session", `session ${shortId(s.sessionId)}`);
+      ? [part("part reason", `unparsed: ${s.reason ?? NONE}`)]
+      : [part("part message-id", s.messageId), " · ", part("part", `OCPP ${s.ocppVersion}`)];
+  const session = part("part session", `session ${shortId(s.sessionId)}`);
   session.title = `Session ID ${s.sessionId}`;
   row.replaceChildren(
     el("td", "time", s.time),
@@ -466,7 +526,7 @@ function fillRow(row: HTMLTableRowElement, entry: Entry): void {
       el("span", "cp", s.chargePointId),
       " ",
       action,
-      el("span", "sub", `${details} · `, session),
+      el("span", "sub", ...details, " · ", session),
     ),
     el("td", "type", el("span", `pill type-${s.type.toLowerCase()}`, s.type)),
     el(
@@ -475,7 +535,12 @@ function fillRow(row: HTMLTableRowElement, entry: Entry): void {
       `${s.arrow} ${s.direction === "cp-to-csms" ? "to CSMS" : "to charger"}`,
     ),
     el("td", "tenant", s.tenant),
-    el("td", "source", s.source, ...(s.ignored ? [el("span", "pill ignored", "ignored")] : [])),
+    el(
+      "td",
+      "source",
+      el("span", "part", s.source),
+      ...(s.ignored ? [el("span", "pill ignored", "ignored")] : []),
+    ),
     el("td", "delivery", statusPill(s.delivery)),
   );
 }

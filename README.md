@@ -242,7 +242,7 @@ All configuration is done through environment variables:
 | `VIEWER_PASSWORD`              | With `VIEWER_ENABLED` | —  | HTTP Basic password, taken verbatim. Never logged                                  |
 | `VIEWER_HOST`                  | No       | `127.0.0.1`     | Address or hostname the viewer listens on                                           |
 | `VIEWER_PORT`                  | No       | `9001`          | Port the viewer listens on; must differ from `PORT`                                 |
-| `VIEWER_MAX_BUFFERED_MESSAGES` | No       | `1000`          | Messages a browser keeps (`1`–`100000`); older ones are discarded                   |
+| `VIEWER_MAX_BUFFERED_MESSAGES` | No       | `1000`          | Messages a browser lists (`1`–`100000`); older ones are discarded. While paused, as many again are held for the resume (up to twice the value in memory) |
 | `VIEWER_MAX_CLIENTS`           | No       | `5`             | Browsers streaming at once (`1`–`1000`)                                             |
 | `VIEWER_CLIENT_IP_HEADER`      | No       | — (socket address) | Header holding the viewer client's IP address, set by a **trusted** reverse proxy that overwrites it. A request without exactly one bare IP address gets `400` |
 

@@ -320,7 +320,20 @@ td {
   display: block;
   color: var(--muted);
   font-size: 0.75rem;
-  word-break: break-all;
+}
+
+/* A sub-line or cell part, kept whole: the line breaks between parts. */
+.part {
+  white-space: nowrap;
+}
+
+/* An unbounded value from the frame: whole unless longer than the line. */
+.part.message-id,
+.part.reason {
+  display: inline-block;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .direction {

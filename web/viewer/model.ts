@@ -296,8 +296,10 @@ export type NewGap =
 /**
  * The page's memory bound besides the message count: the sum of the buffered
  * frames' `raw` lengths (UTF-16 code units, one byte each for the ASCII most
- * OCPP traffic is). The parsed payload and the DOM cost a few times more, so
- * this keeps a tab with large frames well under a gigabyte.
+ * OCPP traffic is). It applies to the list, and again to the messages held
+ * while paused: up to twice this in memory until the resume. The parsed
+ * payload and the DOM cost a few times more, so this keeps a tab with large
+ * frames under a gigabyte.
  */
 export const MAX_BUFFERED_BYTES = 64 * 1024 * 1024;
 
@@ -794,6 +796,82 @@ export function filterPredicate(filter: FilterState): (entry: Entry) => boolean 
     }
     return true;
   };
+}
+
+// --- Membership changes of listed messages ---
+
+/** A message to list, before the row of `beforeKey` (`null`: at the end). */
+export interface RowInsert {
+  entry: TraceEntry;
+  beforeKey: number | null;
+}
+
+export interface MembershipChanges {
+  /** In reception order: inserting them one after the other keeps the list in order. */
+  insert: RowInsert[];
+  /** Keys of the rows to remove. */
+  remove: number[];
+}
+
+/**
+ * Which rows come or go when messages already listed changed (a delivery
+ * update under a delivery filter). Paused, nothing does: the list stays
+ * frozen until the resume.
+ */
+export function membershipChanges(
+  listed: readonly Entry[],
+  isShown: (key: number) => boolean,
+  changed: Iterable<TraceEntry>,
+  visible: (entry: Entry) => boolean,
+  paused: boolean,
+): MembershipChanges {
+  const changes: MembershipChanges = { insert: [], remove: [] };
+  if (paused) return changes;
+  const entering: TraceEntry[] = [];
+  const leaving = new Set<number>();
+  for (const entry of changed) {
+    // Evicted or held while paused: not in the list, it has no row to come or go.
+    if (listed[indexAfter(listed, entry.key) - 1] !== entry) continue;
+    const shown = isShown(entry.key);
+    if (visible(entry) === shown) continue;
+    if (shown) leaving.add(entry.key);
+    else entering.push(entry);
+  }
+  changes.remove = [...leaving];
+  entering.sort((a, b) => a.key - b.key);
+  for (const entry of entering) {
+    // The next row once the removals are done; the earlier insertions go before it too.
+    let beforeKey: number | null = null;
+    for (let i = indexAfter(listed, entry.key); i < listed.length; i++) {
+      const { key } = listed[i];
+      if (isShown(key) && !leaving.has(key)) {
+        beforeKey = key;
+        break;
+      }
+    }
+    changes.insert.push({ entry, beforeKey });
+  }
+  return changes;
+}
+
+/** The index of the first entry whose key is greater than `key` (entries in key order). */
+function indexAfter(entries: readonly Entry[], key: number): number {
+  let low = 0;
+  let high = entries.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (entries[mid].key <= key) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+/** The entries that have a row, in list order: what "export filtered" writes. */
+export function listedEntries(
+  entries: readonly Entry[],
+  isShown: (key: number) => boolean,
+): Entry[] {
+  return entries.filter((entry) => isShown(entry.key));
 }
 
 // --- Export ---

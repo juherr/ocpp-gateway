@@ -137,6 +137,30 @@ describe("filterPredicate", () => {
     expect(matching(entries, { text: "SECRET-RAW" })).toEqual([]);
   });
 
+  it("never searches a CALLERROR's description or details", () => {
+    const error = responseDoc("CALLERROR", "Authorize", { messageId: "msg-error" });
+    if (error.kind !== "trace") throw new Error("unreachable");
+    const { trace } = error;
+    trace.error = {
+      code: "InternalError",
+      description: "SECRET-DESC-789 rejected",
+      details: { token: "SECRET-DETAIL-012" },
+    };
+    trace.raw = JSON.stringify([
+      4,
+      trace.messageId,
+      trace.error.code,
+      trace.error.description,
+      trace.error.details,
+    ]);
+    const entries = entriesOf(error);
+    expect(matching(entries, { text: "msg-error" })).toEqual(ids(error));
+    expect(matching(entries, { text: "SECRET-DESC" })).toEqual([]);
+    expect(matching(entries, { text: "SECRET-DETAIL" })).toEqual([]);
+    expect(matching(entries, { text: "token" })).toEqual([]);
+    expect(matching(entries, { text: "rejected" })).toEqual([]);
+  });
+
   it("combines filters", () => {
     const a = callDoc({ tenantId: "tenant-a", action: "Heartbeat" });
     const b = callDoc({ tenantId: "tenant-a", action: "Authorize" });
