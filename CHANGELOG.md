@@ -70,8 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`127.0.0.1:9001` by default), every route behind HTTP Basic
   authentication, with a per-source limit on failed attempts (`429`), a
   strict Content Security Policy and `Cache-Control: no-store`. Independent
-  of trace archiving and MongoDB. It serves a placeholder page for now; the
-  viewer UI follows.
+  of trace archiving and MongoDB.
 - Live stream of OCPP frames for the trace viewer: `GET /events`, a
   Server-Sent Events stream of every frame received while a browser is
   connected (charger, primary and secondary CSMS), shown once whatever the
@@ -80,6 +79,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reported by a `gap` event, and is disconnected if it does not catch up;
   each stream's memory is bounded, `VIEWER_MAX_CLIENTS` streams at most.
   Forwarding never waits for a browser.
+- Live trace page, served by the viewer: every frame in reception order with
+  its charge point, action (the correlated CALL's for a response), type,
+  direction, tenant, source and a delivery status kept up to date; a detail
+  panel with the Open OCPP Trace fields, the formatted payload (its JSON
+  syntax-highlighted up to 256 KiB, with Prism bundled in the page), the
+  gateway's metadata, each destination's delivery (`written` is not an
+  acknowledgement) and the raw frame, both copyable. It shows its connection
+  state, reconnects by itself with a growing delay (wrong credentials stop
+  it), and marks every interruption as a possible gap, never claiming to
+  have recovered it. The browser keeps the last
+  `VIEWER_MAX_BUFFERED_MESSAGES` messages, and at most 64 MiB of raw frames.
 
 ### Changed
 

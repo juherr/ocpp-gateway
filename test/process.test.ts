@@ -310,7 +310,23 @@ describe("gateway process with the live trace viewer", () => {
       expect((await fetch(url)).status).toBe(401);
       const page = await fetch(url, { headers: { authorization } });
       expect(page.status).toBe(200);
-      expect(await page.text()).toContain("OCPP Gateway Viewer");
+      const html = await page.text();
+      expect(html).toContain("OCPP Gateway — Live Traces");
+      expect(html).toContain("Waiting for OCPP traffic…");
+      expect(html).toContain('<script src="/viewer.js" defer></script>');
+      expect(html).toContain('<link rel="stylesheet" href="/viewer.css" />');
+
+      // The built page (dist/viewer/), not a stand-in.
+      const script = await fetch(`${url}viewer.js`, { headers: { authorization } });
+      expect(script.status).toBe(200);
+      expect(script.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+      const js = await script.text();
+      expect(js).toContain("/events");
+      expect(js).toContain("Copy raw frame");
+      expect(js).not.toMatch(/\brequire\(|sourceMappingURL/);
+      const style = await fetch(`${url}viewer.css`, { headers: { authorization } });
+      expect(style.status).toBe(200);
+      expect(await style.text()).toContain("font-family");
 
       proc.kill("SIGTERM");
       expect(await exited).toBe(0);

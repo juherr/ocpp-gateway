@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>OCPP Gateway — Live Traces</title>
+    <link rel="stylesheet" href="/viewer.css" />
+    <script src="/viewer.js" defer></script>
+  </head>
+  <body>
+    <header class="top">
+      <h1>OCPP Gateway — Live Traces</h1>
+      <span id="connection" class="badge badge-connecting" role="status">Connecting…</span>
+    </header>
+    <p id="connection-message" class="notice" hidden></p>
+
+    <section class="counters" aria-label="Counters">
+      <div class="counter">
+        <span class="counter-label">Messages received</span>
+        <span id="count-received" class="counter-value">0</span>
+      </div>
+      <div class="counter">
+        <span class="counter-label">Sessions observed</span>
+        <span id="count-sessions" class="counter-value">0</span>
+      </div>
+    </section>
+
+    <main class="layout">
+      <section class="list" aria-label="Messages">
+        <div id="list-scroll" class="list-scroll">
+          <table class="messages">
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Charge point / Message</th>
+                <th scope="col">Type</th>
+                <th scope="col">Direction</th>
+                <th scope="col">Tenant</th>
+                <th scope="col">Source</th>
+                <th scope="col">Delivery</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+          <p id="empty" class="empty">Waiting for OCPP traffic…</p>
+        </div>
+      </section>
+
+      <aside class="detail" aria-label="Message details">
+        <h2>Message details</h2>
+        <div id="detail">
+          <p class="hint">Select a message to see its content.</p>
+        </div>
+      </aside>
+    </main>
+  </body>
+</html>

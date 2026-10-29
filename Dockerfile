@@ -6,8 +6,10 @@ FROM --platform=$BUILDPLATFORM node:24 AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
-COPY tsconfig.json vite.config.ts ./
+COPY tsconfig.json tsconfig.web.json vite.config.ts ./
 COPY src ./src
+# The viewer's page, built into dist/viewer/ next to the bundle.
+COPY web ./web
 RUN npm run build
 
 FROM node:24-alpine

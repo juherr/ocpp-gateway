@@ -21,10 +21,29 @@ export default defineConfig({
     // Silence the logger for every test; logger tests install their own sink.
     setupFiles: ["./test/setup.ts"],
   },
-  pack: {
-    entry: ["src/index.ts"],
-    format: ["cjs"],
-    sourcemap: true,
-    dts: false,
-  },
+  pack: [
+    {
+      entry: ["src/index.ts"],
+      format: ["cjs"],
+      sourcemap: true,
+      dts: false,
+    },
+    // The viewer's page: one browser script (dist/viewer/viewer.js) plus the
+    // html and css it needs, read by the gateway at viewer startup.
+    {
+      entry: { viewer: "web/viewer/app.ts" },
+      format: ["iife"],
+      platform: "browser",
+      target: "es2022",
+      tsconfig: "tsconfig.web.json",
+      outDir: "dist/viewer",
+      // tsdown names an iife `[name].iife.js`; the page loads /viewer.js.
+      outputOptions: { entryFileNames: "[name].js" },
+      minify: true,
+      // No map: the viewer serves no viewer.js.map.
+      sourcemap: false,
+      dts: false,
+      copy: ["web/viewer/index.html", "web/viewer/viewer.css"],
+    },
+  ],
 });
