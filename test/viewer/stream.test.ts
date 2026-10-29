@@ -337,6 +337,20 @@ describe("live stream through a real gateway and viewer", () => {
     expect(hub.active()).toBe(false);
   });
 
+  it("closes the viewer server alone with a stream open, and the hub drops that client", async () => {
+    const [primary] = await csmsFor(answering("primary"));
+    const { hub, viewer, viewerPort } = await startStack(routes(primary));
+    const stream = await openStream(viewerPort);
+    expect(hub.active()).toBe(true);
+
+    const started = Date.now();
+    await viewer.close();
+    await stream.closed;
+    expect(Date.now() - started).toBeLessThan(1000);
+    await waitFor(() => hub.stats().clients === 0);
+    expect(hub.active()).toBe(false);
+  });
+
   it("lets the viewer close while a stream is open", async () => {
     const [primary] = await csmsFor(answering("primary"));
     const { hub, viewer, viewerPort } = await startStack(routes(primary));
