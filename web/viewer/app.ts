@@ -302,6 +302,8 @@ function filtersChanged(): void {
   typingTimer = undefined;
   filter = readFilter();
   visible = filterPredicate(filter);
+  // A select may have kept a value no longer observed: drop it at the next refresh.
+  filledVersions.clear();
   rebuildDue = true;
   schedule();
 }

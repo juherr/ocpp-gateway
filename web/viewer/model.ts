@@ -756,7 +756,7 @@ export function filterPredicate(filter: FilterState): (entry: Entry) => boolean 
 function metadataContains({ doc, summary: s }: TraceEntry, text: string): boolean {
   return (
     contains(doc.id, text) ||
-    (doc.tenantId !== null && contains(doc.tenantId, text)) ||
+    contains(doc.tenantId ?? "", text) ||
     contains(s.sessionId, text) ||
     contains(s.chargePointId, text) ||
     contains(s.type, text) ||
