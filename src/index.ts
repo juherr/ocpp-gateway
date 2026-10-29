@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { loadConfig } from "./config";
 import { type ErrorReporter, noopErrorReporter } from "./error-reporter";
 import { configureLogger, createLogger } from "./logger";
@@ -5,8 +6,8 @@ import { startProxy } from "./proxy";
 import { RouteStore } from "./routes";
 import { TRACE_FLUSH_TIMEOUT_MS, type TraceArchive, openTraceArchive } from "./trace/archive";
 import { LiveTraceHub } from "./viewer/hub";
-import { PLACEHOLDER_ASSETS } from "./viewer/placeholder";
-import { startViewer } from "./viewer/server";
+import { loadViewerAssets } from "./viewer/assets";
+import { startViewer, type ViewerAssets } from "./viewer/server";
 
 const log = createLogger("proxy");
 
@@ -73,6 +74,16 @@ async function main() {
   // updated table.
   routes.watch();
 
+  // The page, built next to the bundle (dist/viewer/), read once.
+  let viewerAssets: ViewerAssets | undefined;
+  if (config.viewer) {
+    try {
+      viewerAssets = loadViewerAssets(join(__dirname, "viewer"));
+    } catch (err) {
+      return fail("failed to load the viewer page", err);
+    }
+  }
+
   let archive: TraceArchive | undefined;
   if (config.trace) {
     try {
@@ -102,7 +113,8 @@ async function main() {
   // Its own port, after the gateway; it has logged and reported a listen error.
   const viewer =
     config.viewer &&
-    startViewer(config.viewer, { assets: PLACEHOLDER_ASSETS, events: hub?.handle });
+    viewerAssets &&
+    startViewer(config.viewer, { assets: viewerAssets, events: hub?.handle });
   if (viewer) {
     viewer.server.once("error", exitOnListenError);
     viewer.server.once("listening", () => viewer.server.off("error", exitOnListenError));

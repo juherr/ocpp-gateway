@@ -30,7 +30,7 @@
   "main": "dist/index.cjs",
   "scripts": {
     "build": "vp pack",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.web.json",
     "start": "node --enable-source-maps dist/index.cjs",
     "dev": "vp pack --watch & node --enable-source-maps --watch dist/index.cjs",
     "test": "vitest run",
