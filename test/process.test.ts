@@ -2,7 +2,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
-import { type AddressInfo, createServer as createTcpServer, type Server } from "node:net";
+import { type AddressInfo, connect, createServer as createTcpServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -240,6 +240,106 @@ describe("gateway process with Sentry enabled", () => {
 
       expect(await exited).toBe(0);
       expect(ingest.events.map((e) => e.tags?.component)).toContain("routes");
+    },
+    TIMEOUT_MS,
+  );
+});
+
+describe("gateway process with the live trace viewer", () => {
+  const USERNAME = "viewer-user-3e9b70";
+  const PASSWORD = "viewer-pw-a61f0c";
+  const authorization = `Basic ${Buffer.from(`${USERNAME}:${PASSWORD}`).toString("base64")}`;
+
+  /** Whether something accepts TCP connections on `port`. */
+  async function listens(port: number): Promise<boolean> {
+    const socket = connect(port, "127.0.0.1");
+    try {
+      await once(socket, "connect");
+      return true;
+    } catch {
+      return false;
+    } finally {
+      socket.destroy();
+    }
+  }
+
+  it(
+    "refuses to start without credentials, never echoing the ones given",
+    async () => {
+      let output = "";
+      const { proc, exited } = startGateway({
+        PORT: String(await freePort()),
+        VIEWER_ENABLED: "true",
+        VIEWER_PASSWORD: PASSWORD,
+      });
+      proc.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+      proc.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+
+      expect(await exited).toBe(1);
+      expect(output).toContain("VIEWER_USERNAME: required when VIEWER_ENABLED is true");
+      expect(output).not.toContain(PASSWORD);
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    "serves the viewer behind Basic authentication, and shuts it down gracefully",
+    async () => {
+      const viewerPort = await freePort();
+      const { proc, exited, logged } = startGateway({
+        PORT: String(await freePort()),
+        VIEWER_ENABLED: "true",
+        VIEWER_USERNAME: USERNAME,
+        VIEWER_PASSWORD: PASSWORD,
+        VIEWER_PORT: String(viewerPort),
+      });
+      await logged("viewer listening");
+
+      const url = `http://127.0.0.1:${viewerPort}/`;
+      expect((await fetch(url)).status).toBe(401);
+      const page = await fetch(url, { headers: { authorization } });
+      expect(page.status).toBe(200);
+      expect(await page.text()).toContain("OCPP Gateway Viewer");
+
+      proc.kill("SIGTERM");
+      expect(await exited).toBe(0);
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    "exits non-zero when the viewer port is taken",
+    async () => {
+      held = createTcpServer().listen(0, "127.0.0.1");
+      await once(held, "listening");
+      const { port } = held.address() as AddressInfo;
+
+      const { exited } = startGateway({
+        PORT: String(await freePort()),
+        VIEWER_ENABLED: "true",
+        VIEWER_USERNAME: USERNAME,
+        VIEWER_PASSWORD: PASSWORD,
+        VIEWER_PORT: String(port),
+      });
+
+      expect(await exited).toBe(1);
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    "starts no viewer when it is disabled",
+    async () => {
+      const viewerPort = await freePort();
+      const { logged } = startGateway({
+        PORT: String(await freePort()),
+        VIEWER_USERNAME: USERNAME,
+        VIEWER_PASSWORD: PASSWORD,
+        VIEWER_PORT: String(viewerPort),
+      });
+      await logged("proxy listening");
+
+      expect(await listens(viewerPort)).toBe(false);
     },
     TIMEOUT_MS,
   );

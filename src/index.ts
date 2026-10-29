@@ -4,6 +4,8 @@ import { configureLogger, createLogger } from "./logger";
 import { startProxy } from "./proxy";
 import { RouteStore } from "./routes";
 import { TRACE_FLUSH_TIMEOUT_MS, type TraceArchive, openTraceArchive } from "./trace/archive";
+import { PLACEHOLDER_ASSETS } from "./viewer/placeholder";
+import { startViewer } from "./viewer/server";
 
 const log = createLogger("proxy");
 
@@ -80,6 +82,13 @@ async function main() {
   gateway.server.once("error", exitOnListenError);
   gateway.server.once("listening", () => gateway.server.off("error", exitOnListenError));
 
+  // Its own port, after the gateway; it has logged and reported a listen error.
+  const viewer = config.viewer && startViewer(config.viewer, { assets: PLACEHOLDER_ASSETS });
+  if (viewer) {
+    viewer.server.once("error", exitOnListenError);
+    viewer.server.once("listening", () => viewer.server.off("error", exitOnListenError));
+  }
+
   const shutdown = () => {
     log.info("shutting down…");
     routes.close();
@@ -94,7 +103,7 @@ async function main() {
     // are idempotent). Errors reported while closing are sent last, even if
     // a close fails.
     const closing = gateway.close();
-    void Promise.allSettled([closing, archive?.close()]).then(() => exit(0));
+    void Promise.allSettled([closing, archive?.close(), viewer?.close()]).then(() => exit(0));
   };
 
   process.on("SIGINT", shutdown);
