@@ -96,10 +96,13 @@ const STREAM_HEADERS = {
 
 const PING = Buffer.from(": ping\n\n");
 
-/** One SSE event; `data` is JSON, a single line (JSON.stringify never emits a raw newline). */
-function sseEvent(event: string, data: unknown, id?: number): Buffer {
-  const head = id === undefined ? "" : `id: ${id}\n`;
-  return Buffer.from(`${head}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+/**
+ * One SSE event; `data` is JSON, a single line (JSON.stringify never emits a
+ * raw newline). No `id:` field: there is no history to resume from, so an
+ * id would only invite a client to send a `Last-Event-ID` nothing honours.
+ */
+function sseEvent(event: string, data: unknown): Buffer {
+  return Buffer.from(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
 /**
@@ -121,7 +124,6 @@ export class LiveTraceHub implements TraceSink {
   private readonly maxDroppingMs: number;
   private readonly heartbeatMs: number;
   private heartbeat?: NodeJS.Timeout;
-  private nextEventId = 1;
   private closed = false;
   private failureReported = false;
   private readonly totals = { sent: 0, dropped: 0, endedSlow: 0, peakBufferedBytes: 0 };
@@ -143,10 +145,7 @@ export class LiveTraceHub implements TraceSink {
   insert(doc: TraceDocument): boolean {
     if (this.clients.size === 0) return false;
     try {
-      // The id is only taken once the event is built: a failure skips none.
-      const event = sseEvent("trace", doc, this.nextEventId);
-      this.nextEventId++;
-      this.broadcast(event);
+      this.broadcast(sseEvent("trace", doc));
       return true;
     } catch (err) {
       this.reportFailure(err);

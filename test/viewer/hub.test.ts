@@ -175,7 +175,7 @@ describe("LiveTraceHub", () => {
     expect(hub.insert(original)).toBe(true);
 
     const [trace] = client.named("trace");
-    expect(trace.id).toBe("1");
+    expect(trace.id).toBeUndefined();
     expect(trace.data).toEqual(JSON.parse(JSON.stringify(original)));
     expect((trace.data as { receivedAt: string }).receivedAt).toBe("2026-10-29T10:00:00.000Z");
     // One `data:` line: the frame's text holds no raw newline.
@@ -188,7 +188,7 @@ describe("LiveTraceHub", () => {
     hub.insert(doc("t1", 'line one\nline two\r\n"quoted"'));
 
     const block = client.text().split("\n\n")[1];
-    expect(block.split("\n")).toHaveLength(3);
+    expect(block.split("\n")).toEqual(["event: trace", expect.stringMatching(/^data: \{.*\}$/)]);
     const [trace] = client.named("trace");
     expect((trace.data as { frame: { raw: string } }).frame.raw).toBe(
       'line one\nline two\r\n"quoted"',
@@ -220,19 +220,22 @@ describe("LiveTraceHub", () => {
     expect((first.data as TraceDocument).deliveries[0].status).toBe("queued");
   });
 
-  it("numbers trace events with one increasing id, shared by every client", () => {
+  it("sends no event id: there is no history to resume from", () => {
     const hub = makeHub();
     const { client: early } = connected(hub);
     hub.insert(doc("t1"));
     const { client: late } = connected(hub);
     hub.insert(doc("t2"));
-    hub.insert(doc("t3"));
+    hub.updateDelivery("t2", 0, written());
 
-    expect(early.named("trace").map((e) => e.id)).toEqual(["1", "2", "3"]);
-    expect(late.named("trace").map((e) => e.id)).toEqual(["2", "3"]);
+    const traceIds = (client: typeof early) =>
+      client.named("trace").map((e) => (e.data as TraceDocument).id);
+    expect(traceIds(early)).toEqual(["t1", "t2"]);
+    expect(traceIds(late)).toEqual(["t2"]);
+    for (const client of [early, late]) expect(client.text()).not.toMatch(/^id:/m);
   });
 
-  it("streams delivery updates, without an event id", () => {
+  it("streams delivery updates", () => {
     const hub = makeHub();
     const { client } = connected(hub);
     hub.insert(doc("t1"));
@@ -255,7 +258,7 @@ describe("LiveTraceHub", () => {
       },
     ]);
     hub.insert(doc("t2"));
-    expect(client.named("trace").map((e) => e.id)).toEqual(["1", "2"]);
+    expect(client.named("trace").map((e) => (e.data as TraceDocument).id)).toEqual(["t1", "t2"]);
   });
 
   it("stops streaming to a detached client", () => {
@@ -288,7 +291,7 @@ describe("LiveTraceHub", () => {
       const tail = slow.events().slice(1); // after hello
       expect(tail).toEqual([
         { event: "gap", id: undefined, data: { dropped: 3 } },
-        expect.objectContaining({ event: "trace", id: "3" }),
+        expect.objectContaining({ event: "trace", data: expect.objectContaining({ id: "t3" }) }),
       ]);
       expect(hub.stats()).toMatchObject({ dropped: 3, endedSlow: 0 });
       expect(fast.named("gap")).toEqual([]);
@@ -322,7 +325,7 @@ describe("LiveTraceHub", () => {
       hub.insert(doc("t2"));
       expect(client.events().slice(1)).toEqual([
         { event: "gap", id: undefined, data: { dropped: 1 } },
-        expect.objectContaining({ event: "trace", id: "2" }),
+        expect.objectContaining({ event: "trace", data: expect.objectContaining({ id: "t2" }) }),
       ]);
     });
 

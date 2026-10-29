@@ -14,21 +14,21 @@ function splits(text: string): [string, string][] {
 }
 
 describe("SseParser", () => {
-  it("dispatches an event with its type, data and id", () => {
-    expect(parse('id: 7\nevent: trace\ndata: {"a":1}\n\n')).toEqual([
-      { event: "trace", data: '{"a":1}', id: "7" },
-    ]);
+  it("dispatches an event with its type and data", () => {
+    expect(parse('event: trace\ndata: {"a":1}\n\n')).toEqual([{ event: "trace", data: '{"a":1}' }]);
   });
 
-  it('defaults the type to "message" and leaves the id unset when the event has none', () => {
+  it('defaults the type to "message"', () => {
     expect(parse("data: x\n\n")).toEqual([{ event: "message", data: "x" }]);
   });
 
-  it("does not carry an id over to the next event", () => {
-    expect(parse("id: 1\nevent: trace\ndata: a\n\nevent: delivery\ndata: b\n\n")).toEqual([
-      { event: "trace", data: "a", id: "1" },
-      { event: "delivery", data: "b" },
-    ]);
+  it("ignores id and retry fields: the stream has no history to resume", () => {
+    expect(parse("id: 1\nretry: 5\nevent: trace\ndata: a\n\nevent: delivery\ndata: b\n\n")).toEqual(
+      [
+        { event: "trace", data: "a" },
+        { event: "delivery", data: "b" },
+      ],
+    );
   });
 
   it("joins multi-line data with newlines", () => {
@@ -88,7 +88,7 @@ describe("SseParser", () => {
       'id: 3\r\nevent: trace\r\ndata: {"é":"\\n"}\r\n\r\n: ping\r\rdata: a\rdata: b\n\n';
     const expected = parse(stream);
     expect(expected).toEqual([
-      { event: "trace", data: '{"é":"\\n"}', id: "3" },
+      { event: "trace", data: '{"é":"\\n"}' },
       { event: "message", data: "a\nb" },
     ]);
     for (const [a, b] of splits(stream)) expect(parse(a, b)).toEqual(expected);

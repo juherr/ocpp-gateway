@@ -204,9 +204,8 @@ describe("live stream through a real gateway and viewer", () => {
       ignored: true,
       correlation: { callTraceId: call.id },
     });
-    // Trace events are numbered in order.
-    const ids = stream.named("trace").map((e) => Number(e.id));
-    expect(ids).toEqual([...ids].sort((a, b) => a - b));
+    // No event ids: there is no history a Last-Event-ID could resume.
+    expect(stream.body()).not.toMatch(/^id:/m);
   });
 
   it("streams a primary CALLERROR, correlated", async () => {
@@ -379,7 +378,7 @@ describe("live stream under load", () => {
     await waitFor(() => received.length === 20);
     await waitFor(() => streams.every((s) => s.traces().length === 40));
 
-    const ids = streams.map((s) => s.named("trace").map((e) => e.id));
+    const ids = streams.map((s) => s.named("trace").map((e) => (e.data as { id: string }).id));
     expect(ids[1]).toEqual(ids[0]);
     expect(ids[2]).toEqual(ids[0]);
   });
