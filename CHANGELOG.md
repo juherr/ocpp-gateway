@@ -82,8 +82,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live trace page, served by the viewer: every frame in reception order with
   its charge point, action (the correlated CALL's for a response), type,
   direction, tenant, source and a delivery status kept up to date; a detail
-  panel with the Open OCPP Trace fields, the formatted payload, the gateway's
-  metadata, each destination's delivery (`written` is not an
+  panel with the Open OCPP Trace fields, the formatted payload (its JSON
+  syntax-highlighted up to 256 KiB, with Prism bundled in the page), the
+  gateway's metadata, each destination's delivery (`written` is not an
   acknowledgement) and the raw frame, both copyable. It shows its connection
   state, reconnects by itself with a growing delay (wrong credentials stop
   it), and marks every interruption as a possible gap, never claiming to

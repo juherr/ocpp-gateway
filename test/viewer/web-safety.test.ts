@@ -25,6 +25,9 @@ const FORBIDDEN: [string, RegExp][] = [
   ["createContextualFragment", /\bcreateContextualFragment\b/],
   ["srcdoc", /\bsrcdoc\b/],
   ["inline handler property", /\.\s*on[a-z]+\s*=(?!=)/],
+  // Prism's highlighters return or write HTML: only its tokenizer is used.
+  ["Prism highlighter", /\bPrism\s*\.\s*highlight/],
+  ["Prism highlighter method", /\.\s*highlight(All|AllUnder|Element)\b/],
 ];
 
 describe("viewer page sources", () => {
@@ -32,6 +35,21 @@ describe("viewer page sources", () => {
     expect(files).toEqual(
       expect.arrayContaining(["app.ts", "model.ts", "sse.ts", "index.html", "viewer.css"]),
     );
+  });
+
+  it("forbids Prism's HTML highlighters", () => {
+    const sinks = FORBIDDEN.filter(([label]) => label.startsWith("Prism"));
+    for (const call of [
+      "Prism.highlight(text, grammar)",
+      "Prism.highlightAll()",
+      "x.highlightElement(el)",
+    ]) {
+      expect(
+        sinks.some(([, pattern]) => pattern.test(call)),
+        call,
+      ).toBe(true);
+    }
+    expect(sinks.some(([, pattern]) => pattern.test("Prism.tokenize(text, grammar)"))).toBe(false);
   });
 
   it.each(files)("%s uses no HTML or code sink", (name) => {

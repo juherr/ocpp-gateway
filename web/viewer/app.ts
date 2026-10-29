@@ -20,6 +20,7 @@ import {
   TraceStore,
   type WireTraceDocument,
 } from "./model";
+import { type Builder, buildTokens, HIGHLIGHT_MAX_CHARS, jsonTokens } from "./highlight";
 import { startLiveStream } from "./stream";
 
 /** Until `/api/config` or the stream's hello tells the configured capacity. */
@@ -226,6 +227,32 @@ function json(value: unknown): string {
   return value === undefined ? NONE : JSON.stringify(value, null, 2);
 }
 
+/** Prism's tokens as spans and text nodes: never parsed as HTML. */
+const domBuilder: Builder<Node> = {
+  text: (value) => document.createTextNode(value),
+  span: (className, children) => el("span", className, ...children),
+};
+
+/**
+ * A value as pretty JSON, highlighted unless too large (then plain, with a
+ * note). Built when the detail opens, never on a delivery update.
+ */
+function jsonBlock(value: unknown): HTMLElement[] {
+  const pretty = json(value);
+  const pre = el("pre", "code json");
+  const tokens = value === undefined ? null : jsonTokens(pretty);
+  if (tokens === null) {
+    pre.textContent = pretty;
+    return value !== undefined && pretty.length > HIGHLIGHT_MAX_CHARS
+      ? [el("p", "note", "Highlighting disabled for this large payload."), pre]
+      : [pre];
+  }
+  const fragment = document.createDocumentFragment();
+  for (const node of buildTokens(tokens, domBuilder)) fragment.append(node);
+  pre.append(fragment);
+  return [pre];
+}
+
 /** Rendered on selection only, so a large payload costs nothing until opened. */
 function renderDetail(entry: TraceEntry): void {
   const { doc } = entry;
@@ -268,13 +295,11 @@ function renderDetail(entry: TraceEntry): void {
       field(error, "Description", trace.error.description);
       sections.push(section("Error", error));
       if (trace.error.details !== undefined) {
-        sections.push(
-          section("Error details (JSON)", el("pre", "code", json(trace.error.details))),
-        );
+        sections.push(section("Error details (JSON)", ...jsonBlock(trace.error.details)));
       }
     }
     if (trace.messageType !== "CALLERROR" || trace.payload !== undefined) {
-      sections.push(section("Payload (JSON)", el("pre", "code", json(trace.payload))));
+      sections.push(section("Payload (JSON)", ...jsonBlock(trace.payload)));
     }
   } else {
     const { frame } = doc;

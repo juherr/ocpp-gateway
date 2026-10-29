@@ -48,11 +48,13 @@
     "@commitlint/cli": "^21.0.2",
     "@commitlint/config-conventional": "^21.0.2",
     "@types/node": "^22.0.0",
+    "@types/prismjs": "^1.26.6",
     "@types/ws": "^8.18.2",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "husky": "^9.1.7",
     "lint-staged": "^17.0.7",
+    "prismjs": "^1.30.0",
     "typescript": "^5.7.0",
     "vite-plus": "^0.2.0",
     "vitest": "^2.1.0"

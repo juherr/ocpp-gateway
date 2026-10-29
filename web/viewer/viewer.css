@@ -11,6 +11,10 @@
   --bad: #c62828;
   --selected: #e7efff;
   --gap: #fff4d6;
+  --json-property: #8a2b9e;
+  --json-string: #1a7f37;
+  --json-number: #b35900;
+  --json-literal: #2463eb;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -27,6 +31,10 @@
     --bad: #ff6b6b;
     --selected: #1f2b45;
     --gap: #3a3220;
+    --json-property: #d2a8ff;
+    --json-string: #7ee787;
+    --json-number: #ffa657;
+    --json-literal: #79c0ff;
   }
 }
 
@@ -318,6 +326,30 @@ td {
   font-size: 0.8rem;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* JSON highlighting: Prism's token classes, built as spans by highlight.ts. */
+.code .token.property {
+  color: var(--json-property);
+}
+
+.code .token.string {
+  color: var(--json-string);
+}
+
+.code .token.number {
+  color: var(--json-number);
+}
+
+.code .token.boolean,
+.code .token.null {
+  color: var(--json-literal);
+  font-weight: 600;
+}
+
+.code .token.punctuation,
+.code .token.operator {
+  color: var(--muted);
 }
 
 .copy-actions {
