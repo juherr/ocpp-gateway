@@ -140,6 +140,87 @@ h3 {
   font-variant-numeric: tabular-nums;
 }
 
+.counters {
+  flex-wrap: wrap;
+}
+
+.counter-paused {
+  border-color: var(--warn);
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.filters,
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem 0.75rem;
+}
+
+.filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.filters input,
+.filters select {
+  min-width: 8rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.filters .filter-text input {
+  min-width: 16rem;
+}
+
+.controls button {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.controls button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.controls button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.controls button[aria-pressed="true"] {
+  border-color: var(--warn);
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.action-status {
+  margin: 0;
+  color: var(--muted);
+}
+
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
@@ -239,7 +320,20 @@ td {
   display: block;
   color: var(--muted);
   font-size: 0.75rem;
-  word-break: break-all;
+}
+
+/* A sub-line or cell part, kept whole: the line breaks between parts. */
+.part {
+  white-space: nowrap;
+}
+
+/* An unbounded value from the frame: whole unless longer than the line. */
+.part.message-id,
+.part.reason {
+  display: inline-block;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .direction {

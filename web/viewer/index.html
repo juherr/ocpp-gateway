@@ -24,6 +24,113 @@
         <span class="counter-label">Sessions observed</span>
         <span id="count-sessions" class="counter-value">0</span>
       </div>
+      <div class="counter">
+        <span class="counter-label">Messages shown</span>
+        <span id="count-shown" class="counter-value">0</span>
+      </div>
+      <div class="counter">
+        <span class="counter-label">Removed from buffer</span>
+        <span id="count-evicted" class="counter-value">0</span>
+      </div>
+      <div id="counter-pending" class="counter counter-paused" hidden>
+        <span class="counter-label">New while paused</span>
+        <span id="count-pending" class="counter-value">0</span>
+      </div>
+      <div id="counter-dropped" class="counter counter-paused" hidden>
+        <span class="counter-label">Dropped while paused</span>
+        <span id="count-dropped" class="counter-value">0</span>
+      </div>
+    </section>
+
+    <section class="controls" aria-label="Filters and actions">
+      <div class="filters">
+        <label
+          >Tenant
+          <select id="filter-tenant">
+            <option value="">Any</option>
+          </select>
+        </label>
+        <label
+          >Charge point
+          <input id="filter-cp" type="search" list="filter-cp-options" autocomplete="off" />
+          <datalist id="filter-cp-options"></datalist>
+        </label>
+        <label
+          >Session ID
+          <input id="filter-session" type="search" autocomplete="off" />
+        </label>
+        <label
+          >Direction
+          <select id="filter-direction">
+            <option value="">Any</option>
+            <option value="cp-to-csms">↑ to CSMS</option>
+            <option value="csms-to-cp">↓ to charger</option>
+          </select>
+        </label>
+        <label
+          >Type
+          <select id="filter-type">
+            <option value="">Any</option>
+            <option value="CALL">CALL</option>
+            <option value="CALLRESULT">CALLRESULT</option>
+            <option value="CALLERROR">CALLERROR</option>
+            <option value="unparsed">unparsed</option>
+          </select>
+        </label>
+        <label
+          >Action
+          <select id="filter-action">
+            <option value="">Any</option>
+          </select>
+        </label>
+        <label
+          >Source
+          <select id="filter-source">
+            <option value="">Any</option>
+          </select>
+        </label>
+        <label
+          >Message ID
+          <input id="filter-message-id" type="search" autocomplete="off" />
+        </label>
+        <label title="Messages with at least one destination in this status"
+          >Delivery (any destination)
+          <select id="filter-delivery">
+            <option value="">Any</option>
+            <option value="queued">queued</option>
+            <option value="submitted">submitted</option>
+            <option value="written">written</option>
+            <option value="failed">failed</option>
+            <option value="dropped">dropped</option>
+            <option value="none">routed nowhere</option>
+          </select>
+        </label>
+        <label class="filter-text"
+          >Search metadata
+          <input
+            id="filter-text"
+            type="search"
+            autocomplete="off"
+            placeholder="ids, tenant, action, source, reason"
+            title="Searches ids, tenant, action, source, message type and reason; never payloads nor raw frames"
+          />
+        </label>
+        <button id="filter-reset" type="button">Reset filters</button>
+      </div>
+      <div class="actions">
+        <button id="pause" type="button" aria-pressed="false">Pause</button>
+        <button
+          id="clear"
+          type="button"
+          title="Empties this page's list; the gateway and its archive are not affected"
+        >
+          Clear
+        </button>
+        <button id="export-filtered" type="button">Export traces (filtered)</button>
+        <button id="export-all" type="button">Export traces (all)</button>
+        <button id="export-frames" type="button">Export unparsed frames</button>
+        <p id="action-status" class="action-status" role="status"></p>
+      </div>
     </section>
 
     <main class="layout">

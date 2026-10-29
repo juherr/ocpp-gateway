@@ -8,14 +8,23 @@ import {
   capturedOf,
   type ConnectionState,
   type DeliveryStatus,
+  EMPTY_FILTER,
   type Entry,
+  exportFilename,
+  type FilterState,
+  filterPredicate,
   formatClock,
   type GapEntry,
+  isFilterActive,
+  listedEntries,
+  membershipChanges,
   NONE,
+  type ObservedValues,
   RenderQueue,
   shortId,
   sourceLabel,
   type StreamEvent,
+  toJsonl,
   type TraceEntry,
   TraceStore,
   type WireTraceDocument,
@@ -57,24 +66,49 @@ const ui = {
   connectionMessage: byId("connection-message"),
   received: byId("count-received"),
   sessions: byId("count-sessions"),
+  shown: byId("count-shown"),
+  evicted: byId("count-evicted"),
+  pendingCounter: byId("counter-pending"),
+  pending: byId("count-pending"),
+  droppedCounter: byId("counter-dropped"),
+  dropped: byId("count-dropped"),
   scroll: byId("list-scroll"),
   rows: byId<HTMLTableSectionElement>("rows"),
   empty: byId("empty"),
   detail: byId("detail"),
+  pause: byId<HTMLButtonElement>("pause"),
+  filterReset: byId<HTMLButtonElement>("filter-reset"),
+  actionStatus: byId("action-status"),
+};
+
+const filterUi = {
+  tenant: byId<HTMLSelectElement>("filter-tenant"),
+  chargePointId: byId<HTMLInputElement>("filter-cp"),
+  chargePointOptions: byId<HTMLDataListElement>("filter-cp-options"),
+  sessionId: byId<HTMLInputElement>("filter-session"),
+  direction: byId<HTMLSelectElement>("filter-direction"),
+  messageType: byId<HTMLSelectElement>("filter-type"),
+  action: byId<HTMLSelectElement>("filter-action"),
+  source: byId<HTMLSelectElement>("filter-source"),
+  messageId: byId<HTMLInputElement>("filter-message-id"),
+  delivery: byId<HTMLSelectElement>("filter-delivery"),
+  text: byId<HTMLInputElement>("filter-text"),
 };
 
 const store = new TraceStore(DEFAULT_CAPACITY);
 const rows = new Map<number, HTMLTableRowElement>();
+/** Keys of the rows showing a message (the others show gap markers). */
+const messageRows = new Set<number>();
 let selected: TraceEntry | undefined;
 /** The selected message's Deliveries section, refreshed on its own. */
 let detailDeliveries: HTMLElement | undefined;
 
-/**
- * Which entries are listed: every one for now. Filters plug in here; a filter
- * change rebuilds the list from `store.entries()`.
- */
-function isVisible(_entry: Entry): boolean {
-  return true;
+let filter: FilterState = { ...EMPTY_FILTER };
+let visible = filterPredicate(filter);
+
+/** Which entries are listed: those the filters let through, gap markers always. */
+function isVisible(entry: Entry): boolean {
+  return visible(entry);
 }
 
 // --- Batched rendering: one DOM update per animation frame ---
@@ -82,6 +116,10 @@ function isVisible(_entry: Entry): boolean {
 const pending = new RenderQueue((key) => rows.has(key));
 let frame: number | undefined;
 let detailDirty = false;
+/** The filters changed: the next frame lists `store.entries()` again. */
+let rebuildDue = false;
+/** Listed messages whose delivery changed while filtering by delivery status. */
+const refilter = new Map<number, TraceEntry>();
 
 function schedule(): void {
   frame ??= requestAnimationFrame(flush);
@@ -89,41 +127,355 @@ function schedule(): void {
 
 function evicted(entries: readonly Entry[]): void {
   pending.evict(entries);
-}
-
-function flush(): void {
-  frame = undefined;
-  const batch = pending.take();
-  for (const key of batch.removed) {
-    rows.get(key)?.remove();
-    rows.delete(key);
-    if (selected?.key === key) {
+  for (const entry of entries) {
+    refilter.delete(entry.key);
+    // A selected message hidden by the filters has no row whose removal would clear it.
+    if (entry === selected && !rows.has(entry.key)) {
       selected = undefined;
       showNoSelection();
     }
   }
-  const atBottom = ui.scroll.scrollTop + ui.scroll.clientHeight >= ui.scroll.scrollHeight - 4;
+}
+
+function addRow(entry: Entry, before?: Node | null): HTMLTableRowElement {
+  const row = rowFor(entry);
+  rows.set(entry.key, row);
+  if (entry.kind === "trace") messageRows.add(entry.key);
+  if (before !== undefined) ui.rows.insertBefore(row, before);
+  return row;
+}
+
+function removeRow(key: number): void {
+  rows.get(key)?.remove();
+  rows.delete(key);
+  messageRows.delete(key);
+}
+
+/**
+ * Lists `store.entries()` again through the filters, keeping the rows
+ * already built (refreshed if their entry changed) and creating the others.
+ */
+function rebuild(): void {
+  const { changed } = pending.take();
+  refilter.clear();
+  const built = new Map(rows);
+  rows.clear();
+  messageRows.clear();
   const fragment = document.createDocumentFragment();
-  for (const entry of batch.added) {
+  for (const entry of store.entries()) {
     if (!isVisible(entry)) continue;
-    const row = rowFor(entry);
+    const row = built.get(entry.key);
+    if (!row) {
+      fragment.append(addRow(entry));
+      continue;
+    }
     rows.set(entry.key, row);
+    if (entry.kind === "trace") messageRows.add(entry.key);
     fragment.append(row);
   }
-  ui.rows.append(fragment);
-  for (const entry of batch.changed) {
-    const row = rows.get(entry.key);
-    if (row) fillRow(row, entry);
+  for (const entry of changed) {
+    const row = built.get(entry.key);
+    if (row && rows.has(entry.key)) fillRow(row, entry);
+  }
+  ui.rows.replaceChildren(fragment);
+  // A selected message evicted in the same frame: its removal was not drawn.
+  if (selected && store.get(selected.doc.id) !== selected) {
+    selected = undefined;
+    showNoSelection();
+  }
+}
+
+/**
+ * A listed message whose delivery changed may now pass the delivery filter,
+ * or no longer: its row is inserted in reception order, or removed. Paused,
+ * rows only change state: they wait for the resume to come or go.
+ */
+function applyRefilter(): void {
+  // Paused, the changed messages wait for the first frame after the resume.
+  if (refilter.size === 0 || store.paused) return;
+  const { insert, remove } = membershipChanges(
+    store.entries(),
+    isListed,
+    refilter.values(),
+    isVisible,
+    store.paused,
+  );
+  refilter.clear();
+  for (const key of remove) removeRow(key);
+  for (const { entry, beforeKey } of insert) {
+    addRow(entry, beforeKey === null ? null : (rows.get(beforeKey) ?? null));
+  }
+}
+
+const isListed = (key: number): boolean => rows.has(key);
+
+function flush(): void {
+  frame = undefined;
+  const atBottom = ui.scroll.scrollTop + ui.scroll.clientHeight >= ui.scroll.scrollHeight - 4;
+  if (rebuildDue) {
+    rebuildDue = false;
+    rebuild();
+  } else {
+    const batch = pending.take();
+    for (const key of batch.removed) {
+      removeRow(key);
+      if (selected?.key === key) {
+        selected = undefined;
+        showNoSelection();
+      }
+    }
+    const fragment = document.createDocumentFragment();
+    for (const entry of batch.added) {
+      if (isVisible(entry)) fragment.append(addRow(entry));
+    }
+    ui.rows.append(fragment);
+    for (const entry of batch.changed) {
+      const row = rows.get(entry.key);
+      if (row) fillRow(row, entry);
+    }
+    applyRefilter();
   }
   if (atBottom) ui.scroll.scrollTop = ui.scroll.scrollHeight;
 
   if (detailDirty && selected) refreshDeliveries(selected);
   detailDirty = false;
 
-  ui.received.textContent = store.received.toLocaleString("en");
-  ui.sessions.textContent = store.sessions.toLocaleString("en");
-  ui.empty.hidden = store.size > 0;
+  refreshOptions();
+  showCounters();
 }
+
+function showCounters(): void {
+  const count = (value: number) => value.toLocaleString("en");
+  ui.received.textContent = count(store.received);
+  ui.sessions.textContent = count(store.sessions);
+  ui.shown.textContent = count(messageRows.size);
+  ui.evicted.textContent = count(store.evictedMessages);
+  ui.pending.textContent = count(store.pendingMessages);
+  ui.dropped.textContent = count(store.pendingDropped);
+  ui.pendingCounter.hidden = !store.paused;
+  ui.droppedCounter.hidden = store.pendingDropped === 0;
+  ui.pause.textContent = store.paused
+    ? `Resume${store.pendingMessages > 0 ? ` (${count(store.pendingMessages)} new)` : ""}`
+    : "Pause";
+  ui.pause.setAttribute("aria-pressed", String(store.paused));
+  ui.empty.hidden = rows.size > 0;
+  ui.filterReset.disabled = !isFilterActive(filter);
+  ui.empty.textContent =
+    store.size > 0 && isFilterActive(filter)
+      ? "No message matches the filters."
+      : store.paused
+        ? "Paused: new messages are held until you resume."
+        : "Waiting for OCPP traffic…";
+}
+
+// --- Filters ---
+
+/** A tenant option's value for messages without a tenant: never a tenant id (a DNS label). */
+const NO_TENANT = "(none)";
+
+function readFilter(): FilterState {
+  const tenant = filterUi.tenant.value;
+  return {
+    tenant: tenant === NO_TENANT ? null : tenant,
+    chargePointId: filterUi.chargePointId.value,
+    sessionId: filterUi.sessionId.value,
+    direction: filterUi.direction.value as FilterState["direction"],
+    messageType: filterUi.messageType.value as FilterState["messageType"],
+    action: filterUi.action.value,
+    source: filterUi.source.value,
+    messageId: filterUi.messageId.value,
+    delivery: filterUi.delivery.value as FilterState["delivery"],
+    text: filterUi.text.value,
+  };
+}
+
+/** How long typing in a text filter waits before the list follows. */
+const TYPING_DELAY_MS = 200;
+let typingTimer: ReturnType<typeof setTimeout> | undefined;
+
+function filterTyped(): void {
+  clearTimeout(typingTimer);
+  typingTimer = setTimeout(filtersChanged, TYPING_DELAY_MS);
+}
+
+/** Applies the filters now, a pending typing delay included. */
+function filtersChanged(): void {
+  clearTimeout(typingTimer);
+  typingTimer = undefined;
+  filter = readFilter();
+  visible = filterPredicate(filter);
+  rebuildDue = true;
+  schedule();
+}
+
+function resetFilters(): void {
+  for (const control of Object.values(filterUi)) {
+    if (control instanceof HTMLInputElement || control instanceof HTMLSelectElement) {
+      control.value = "";
+    }
+  }
+  filtersChanged();
+}
+
+let optionsVersion = -1;
+
+/** Each control offering observed values, with how its options are refilled. */
+const optionLists = new Map<HTMLElement, (observed: ObservedValues) => void>([
+  [
+    filterUi.tenant,
+    (observed) =>
+      fillSelect(
+        filterUi.tenant,
+        observed.tenants.map((t) => (t === null ? [NO_TENANT, "No tenant"] : [t, t])),
+      ),
+  ],
+  [
+    filterUi.action,
+    (observed) =>
+      fillSelect(
+        filterUi.action,
+        observed.actions.map((a) => [a, a]),
+      ),
+  ],
+  [
+    filterUi.source,
+    (observed) =>
+      fillSelect(
+        filterUi.source,
+        observed.sources.map((s) => [s, s]),
+      ),
+  ],
+  [
+    filterUi.chargePointId,
+    (observed) =>
+      filterUi.chargePointOptions.replaceChildren(
+        ...observed.chargePointIds.map((id) => {
+          const option = el("option");
+          option.value = id;
+          return option;
+        }),
+      ),
+  ],
+]);
+/** Controls skipped while focused: refreshed when they lose the focus. */
+const staleOptions = new Set<HTMLElement>();
+
+/**
+ * The option lists, from the buffered messages' values, refreshed only when
+ * those change and never under the focus (an open list, typing in the charge
+ * point field). A selected value no longer observed stays selectable.
+ */
+function refreshOptions(): void {
+  if (store.observedVersion === optionsVersion) return;
+  optionsVersion = store.observedVersion;
+  const observed = store.observed();
+  for (const [control, fill] of optionLists) {
+    if (control === document.activeElement) {
+      staleOptions.add(control);
+      continue;
+    }
+    staleOptions.delete(control);
+    fill(observed);
+  }
+}
+
+for (const [control, fill] of optionLists) {
+  control.addEventListener("blur", () => {
+    if (staleOptions.delete(control)) fill(store.observed());
+  });
+}
+
+function fillSelect(select: HTMLSelectElement, options: [value: string, label: string][]): void {
+  const current = select.value;
+  if (current !== "" && !options.some(([value]) => value === current)) {
+    options.push([current, current === NO_TENANT ? "No tenant" : current]);
+  }
+  const any = el("option", undefined, "Any");
+  any.value = "";
+  select.replaceChildren(
+    any,
+    ...options.map(([value, label]) => {
+      const option = el("option", undefined, label);
+      option.value = value;
+      return option;
+    }),
+  );
+  select.value = current;
+}
+
+for (const control of Object.values(filterUi)) {
+  if (control instanceof HTMLSelectElement) control.addEventListener("change", filtersChanged);
+  else if (control instanceof HTMLInputElement) control.addEventListener("input", filterTyped);
+}
+ui.filterReset.addEventListener("click", resetFilters);
+
+// --- Pause, clear ---
+
+function togglePause(): void {
+  if (!store.paused) {
+    store.pause();
+  } else {
+    const { added, evicted: out } = store.resume();
+    for (const entry of added) pending.add(entry);
+    evicted(out);
+  }
+  schedule();
+}
+
+/** Empties this page's list and held messages: the gateway and its archive are untouched. */
+function clearList(): void {
+  store.clear();
+  selected = undefined;
+  showNoSelection();
+  rebuildDue = true;
+  ui.actionStatus.textContent = "List cleared; the gateway and its archive are not affected.";
+  schedule();
+}
+
+ui.pause.addEventListener("click", togglePause);
+byId("clear").addEventListener("click", clearList);
+
+// --- Export ---
+
+const EXPORT_WARNING =
+  "This file contains raw, unmasked OCPP data: RFID tags, authorization tokens, transaction ids and possibly personal data. Keep it private.";
+
+function exportJsonl(kind: "trace" | "frame", entries: readonly Entry[], what: string): void {
+  const count = entries.reduce(
+    (n, e) => n + (e.kind === "trace" && e.doc.kind === kind ? 1 : 0),
+    0,
+  );
+  if (count === 0) {
+    ui.actionStatus.textContent = `Nothing to export: no ${what} in the list.`;
+    return;
+  }
+  if (!window.confirm(`${EXPORT_WARNING}\n\nExport ${count.toLocaleString("en")} ${what}?`)) {
+    ui.actionStatus.textContent = "Export cancelled.";
+    return;
+  }
+  const blob = new Blob([toJsonl(entries, kind)], { type: "application/x-ndjson" });
+  const url = URL.createObjectURL(blob);
+  const link = el("a");
+  link.href = url;
+  link.download = exportFilename(kind, new Date());
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  ui.actionStatus.textContent = `Exported ${count.toLocaleString("en")} ${what} to ${link.download}.`;
+}
+
+byId("export-filtered").addEventListener("click", () =>
+  // Exactly the listed rows: the frozen list while paused, not the filters evaluated again.
+  exportJsonl("trace", listedEntries(store.entries(), isListed), "trace records (filtered)"),
+);
+byId("export-all").addEventListener("click", () =>
+  exportJsonl("trace", store.entries(), "trace records"),
+);
+byId("export-frames").addEventListener("click", () =>
+  exportJsonl("frame", store.entries(), "unparsed frames"),
+);
 
 // --- Rows ---
 
@@ -158,11 +510,13 @@ function fillRow(row: HTMLTableRowElement, entry: Entry): void {
   row.setAttribute("aria-selected", String(entry === selected));
   const action = el("span", s.correlated ? "action correlated" : "action", s.action);
   if (s.correlated) action.title = "Action of the CALL this response answers";
+  // Each part wraps as a whole; the line breaks only between parts.
+  const part = (className: string, value: string) => el("span", className, value);
   const details =
     s.type === "unparsed"
-      ? `unparsed: ${s.reason ?? NONE}`
-      : `${s.messageId} · OCPP ${s.ocppVersion}`;
-  const session = el("span", "session", `session ${shortId(s.sessionId)}`);
+      ? [part("part reason", `unparsed: ${s.reason ?? NONE}`)]
+      : [part("part message-id", s.messageId), " · ", part("part", `OCPP ${s.ocppVersion}`)];
+  const session = part("part session", `session ${shortId(s.sessionId)}`);
   session.title = `Session ID ${s.sessionId}`;
   row.replaceChildren(
     el("td", "time", s.time),
@@ -172,7 +526,7 @@ function fillRow(row: HTMLTableRowElement, entry: Entry): void {
       el("span", "cp", s.chargePointId),
       " ",
       action,
-      el("span", "sub", `${details} · `, session),
+      el("span", "sub", ...details, " · ", session),
     ),
     el("td", "type", el("span", `pill type-${s.type.toLowerCase()}`, s.type)),
     el(
@@ -181,7 +535,12 @@ function fillRow(row: HTMLTableRowElement, entry: Entry): void {
       `${s.arrow} ${s.direction === "cp-to-csms" ? "to CSMS" : "to charger"}`,
     ),
     el("td", "tenant", s.tenant),
-    el("td", "source", s.source, ...(s.ignored ? [el("span", "pill ignored", "ignored")] : [])),
+    el(
+      "td",
+      "source",
+      el("span", "part", s.source),
+      ...(s.ignored ? [el("span", "pill ignored", "ignored")] : []),
+    ),
     el("td", "delivery", statusPill(s.delivery)),
   );
 }
@@ -444,10 +803,10 @@ function showState(state: ConnectionState, retryInMs?: number): void {
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
-/** A received message enters the page here: pausing plugs in. */
+/** A received message enters the page here; paused, the store holds it unlisted. */
 function ingest(doc: WireTraceDocument): void {
   const { added, evicted: out } = store.addTrace(doc);
-  pending.add(added);
+  if (!store.paused) pending.add(added);
   evicted(out);
   schedule();
 }
@@ -464,6 +823,7 @@ function onEvent(event: StreamEvent): void {
       const entry = store.applyDelivery(event.update);
       if (!entry) return;
       pending.change(entry);
+      if (filter.delivery !== "") refilter.set(entry.key, entry);
       if (entry === selected) detailDirty = true;
       break;
     }
@@ -474,8 +834,9 @@ function onEvent(event: StreamEvent): void {
   schedule();
 }
 
+/** Paused, the store holds a new gap marker in place among the held messages. */
 function addGap({ added, evicted: out }: { added: GapEntry; evicted: Entry[] }): void {
-  pending.upsert(added);
+  if (!store.paused) pending.upsert(added);
   evicted(out);
   schedule();
 }
@@ -494,6 +855,7 @@ async function loadCapacity(): Promise<void> {
   }
 }
 
+showCounters();
 void loadCapacity();
 startLiveStream({
   onState: showState,
@@ -502,6 +864,10 @@ startLiveStream({
   onConnected: ({ reconnected, restarted }) => {
     if (!reconnected) return;
     const gap = store.closeGap(iso(Date.now()), restarted);
-    if (gap) addGap({ added: gap, evicted: [] });
+    // A gap not drawn yet is drawn in its latest state; a held one, on resume.
+    if (gap) {
+      pending.change(gap);
+      schedule();
+    }
   },
 });

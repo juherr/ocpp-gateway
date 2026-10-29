@@ -47,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-tenant switch for the live trace viewer: `"viewer": false` on a
   tenant of the routes file (or at its root, for connections without a tenant)
   keeps that scope out of the viewer, independently of `"trace"`. Every scope
-  is shown by default. No effect until the viewer streams frames.
+  is shown by default.
 - Backends accept a stable `id` (`{ "id": "csms-a", "url": "…" }`), naming the
   logical CSMS in traces instead of its URL. Required on every backend when
   trace archiving is enabled; validated whenever present (format, unique within
@@ -90,6 +90,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it), and marks every interruption as a possible gap, never claiming to
   have recovered it. The browser keeps the last
   `VIEWER_MAX_BUFFERED_MESSAGES` messages, and at most 64 MiB of raw frames.
+- Filters, pause and export on the live trace page: combinable filters
+  (tenant including none, charge point, session, direction, type, action,
+  source, message id, delivery status, and a free-text search over metadata
+  only, never payloads nor raw frames) applied to kept and new messages
+  alike; pause and resume, with the frames received meanwhile held within
+  the same bounds and counted; clear, which never affects the gateway nor
+  the archive; and JSON Lines export of the filtered or all trace records,
+  exactly as streamed and Open OCPP Trace v1.1 conforming, unparsed frames
+  in a separate file, after a warning that the file holds raw, unmasked
+  OCPP data.
 
 ### Changed
 
