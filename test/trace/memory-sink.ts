@@ -28,3 +28,17 @@ export class MemoryTraceSink implements TraceSink {
     return this.docs.flatMap((d) => (d.kind === "trace" ? [d.trace] : []));
   }
 }
+
+/**
+ * A MemoryTraceSink that can be switched off, like a live viewer with no
+ * client: `active()` reports `on`, and `activeCalls` counts the checks.
+ */
+export class SwitchableTraceSink extends MemoryTraceSink {
+  on = true;
+  activeCalls = 0;
+
+  active(): boolean {
+    this.activeCalls++;
+    return this.on;
+  }
+}

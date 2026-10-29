@@ -24,7 +24,7 @@ import {
   waitForClose,
 } from "./helpers";
 import { expectConforming } from "./trace/conformance";
-import { MemoryTraceSink } from "./trace/memory-sink";
+import { MemoryTraceSink, SwitchableTraceSink } from "./trace/memory-sink";
 import { FakeStore } from "./trace/memory-store";
 
 type Csms = ReturnType<typeof makeCsms>;
@@ -610,6 +610,148 @@ describe("trace selection per tenant", () => {
     // The spies do see a traced tenant.
     await exchange(port, "tenant-a");
     await waitFor(() => calls().every((n) => n === 1));
+  });
+
+  it("keeps a viewer: false tenant out of the live sink, still archiving it", async () => {
+    const [primary] = await csmsFor(answering("primary"));
+    const archive = new MemoryTraceSink();
+    const live = new MemoryTraceSink();
+    const { port } = await start(
+      scoped(primary, {}, { viewer: false }),
+      { traceSink: archive, liveSink: live },
+      TENANTS,
+    );
+
+    await exchange(port, "demo");
+    await exchange(port, "tenant-a");
+    await waitFor(() => archive.docs.length === 4 && live.docs.length === 2);
+
+    expect(tenantsOf(archive)).toEqual(["demo", "tenant-a"]);
+    expect(tenantsOf(live)).toEqual(["tenant-a"]);
+  });
+
+  it("feeds the live sink for a trace: false tenant, keeping it out of the archive", async () => {
+    const [primary] = await csmsFor(answering("primary"));
+    const archive = new MemoryTraceSink();
+    const live = new MemoryTraceSink();
+    const { port } = await start(
+      scoped(primary, { viewer: false }, { trace: false }),
+      { traceSink: archive, liveSink: live },
+      TENANTS,
+    );
+
+    await exchange(port, "demo");
+    await exchange(port, null);
+    await waitFor(() => archive.docs.length === 2 && live.docs.length === 2);
+
+    expect(tenantsOf(archive)).toEqual([null]);
+    expect(tenantsOf(live)).toEqual(["demo"]);
+  });
+
+  it("never runs the session tracer for a tenant neither archived nor viewed", async () => {
+    const [primary] = await csmsFor(answering("primary"));
+    const { port } = await start(
+      scoped(primary, {}, { trace: false, viewer: false }),
+      { traceSink: new MemoryTraceSink(), liveSink: new MemoryTraceSink() },
+      TENANTS,
+    );
+    const spy = vi.spyOn(SessionTracer.prototype, "fromCharger");
+    cleanups.push(() => spy.mockRestore());
+
+    await exchange(port, "demo");
+    expect(spy).not.toHaveBeenCalled();
+    await exchange(port, "tenant-a");
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs the scopes kept out of the live viewer and whether each connection is viewed", async () => {
+    const logs: Record<string, unknown>[] = [];
+    const capture = (line: string) => logs.push(JSON.parse(line) as Record<string, unknown>);
+    configureLogger({ logLevel: "info", sink: { stdout: capture, stderr: capture } });
+    const [primary] = await csmsFor(answering("primary"));
+    const { port } = await start(
+      scoped(primary, { viewer: false }, { viewer: false }),
+      { liveSink: new MemoryTraceSink() },
+      TENANTS,
+    );
+    await exchange(port, "demo");
+    await exchange(port, "tenant-a");
+
+    expect(logs.find((l) => l.msg === "proxy listening")).toMatchObject({
+      traceArchiving: false,
+      liveViewer: true,
+      unviewed: [null, "demo"],
+    });
+    const connected = logs.filter((l) => l.msg === "charger connected");
+    expect(connected.map(({ tenantId, viewed, traced }) => ({ tenantId, viewed, traced }))).toEqual(
+      [
+        { tenantId: "demo", viewed: false, traced: undefined },
+        { tenantId: "tenant-a", viewed: true, traced: undefined },
+      ],
+    );
+  });
+});
+
+describe("live sink through the gateway", () => {
+  it("sees the frames of a session opened before it became active, from then on", async () => {
+    const [primary] = await csmsFor(answering("primary"));
+    const live = new SwitchableTraceSink();
+    live.on = false;
+    const { port } = await start(routes(primary), { liveSink: live });
+    const { charger, received } = await connect(port);
+
+    charger.send(boot("m1"));
+    await waitFor(() => received.length === 1);
+    expect(live.docs).toEqual([]);
+
+    // A viewer connects: the open session's next frames reach it.
+    live.on = true;
+    charger.send(JSON.stringify([2, "m2", "Heartbeat", {}]));
+    await waitFor(() => received.length === 2);
+    await waitFor(() => live.docs.length === 2 && live.docs.every(settled));
+
+    const [call, result] = live.docs;
+    expect(traceOf(call)).toMatchObject({ messageType: "CALL", messageId: "m2" });
+    expect(traceOf(result)).toMatchObject({
+      messageType: "CALLRESULT",
+      messageId: "m2",
+      meta: { gateway: { correlation: { callTraceId: call.id, action: "Heartbeat" } } },
+    });
+    expect(call.deliveries).toMatchObject([{ target: "csms-main", status: "written" }]);
+  });
+
+  it("feeds the archive and the live sink the same frames", async () => {
+    const [primary, mirror] = await csmsFor(answering("primary"), answering("mirror"));
+    const archive = new MemoryTraceSink();
+    const live = new MemoryTraceSink();
+    const { port } = await start(routes(primary, mirror), { traceSink: archive, liveSink: live });
+    const { charger, received } = await connect(port);
+
+    charger.send(boot("m1"));
+    await waitFor(() => received.length === 1);
+    await waitFor(() => archive.docs.length === 3 && archive.docs.every(settled));
+    await waitFor(() => live.docs.length === 3 && live.docs.every(settled));
+
+    expect(live.docs).toEqual(archive.docs);
+  });
+
+  it("refuses to start with a live sink and a route store without backend ids", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocpp-gateway-test-"));
+    cleanups.push(() => rmSync(dir, { recursive: true }));
+    const routesFile = join(dir, "routes.json");
+    writeFileSync(routesFile, JSON.stringify({ default: { primary: "wss://csms.example.com" } }));
+    const store = RouteStore.load(routesFile);
+    const config = {
+      port: 0,
+      listenHost: "127.0.0.1",
+      routesFile,
+      loggerConfig: { logLevel: "error" as const },
+      maxMessageBytes: DEFAULT_MAX_MESSAGE_BYTES,
+    };
+
+    expect(() => startProxy(config, store, { liveSink: new MemoryTraceSink() })).toThrow(
+      /live viewer needs a route store loaded with requireBackendIds/,
+    );
   });
 });
 

@@ -25,7 +25,7 @@ export async function startGateway(
   const routesFile = join(dir, "routes.json");
   writeFileSync(routesFile, JSON.stringify(table));
   const routes = RouteStore.load(routesFile, {
-    requireBackendIds: options.traceSink !== undefined,
+    requireBackendIds: options.traceSink !== undefined || options.liveSink !== undefined,
   });
   rmSync(dir, { recursive: true });
 
