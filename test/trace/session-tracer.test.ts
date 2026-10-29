@@ -522,6 +522,21 @@ describe("SessionTracer with several sinks", () => {
     expect(live.traces().map((t) => t.meta.gateway.seq)).toEqual([2, 3, 4]);
   });
 
+  it("forgets pending CALLs while no sink is active, never miscorrelating a reused id", () => {
+    const live = new SwitchableTraceSink();
+    const tracer = setupMany(live);
+    tracer.fromCharger(BOOT).commit();
+    live.on = false;
+    // Unseen: the response to the first m1, then a new CALL reusing m1.
+    tracer.fromPrimary('[3,"m1",{"status":"Accepted"}]').commit();
+    tracer.fromCharger(BOOT).commit();
+    live.on = true;
+    tracer.fromPrimary('[3,"m1",{"status":"Accepted"}]').commit();
+
+    expect(live.traces().map((t) => t.messageType)).toEqual(["CALL", "CALLRESULT"]);
+    expect(live.traces()[1].meta.gateway.correlation).toBeUndefined();
+  });
+
   it("does nothing at all without a sink", () => {
     const build = vi.spyOn(SessionTracer.prototype, "build");
     const tracer = setupMany();

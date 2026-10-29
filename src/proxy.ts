@@ -28,7 +28,8 @@ export interface ProxyOptions {
   /**
    * Where to stream every OCPP frame live (the viewer), for the scopes it
    * shows. Attached to every viewed session for its whole life: while it is
-   * not `active()`, frames are not decoded for it. Unset: no live viewer.
+   * not `active()`, frames are not inserted into it, and not decoded at all
+   * while no sink of the session is active. Unset: no live viewer.
    */
   liveSink?: TraceSink;
 }

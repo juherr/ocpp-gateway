@@ -68,6 +68,14 @@ export class Correlator {
     return { traceId: entry.traceId, action: entry.action };
   }
 
+  /** Forget every pending CALL; nothing to do when there is none. */
+  clear(): void {
+    if (this.pending.size === 0) return;
+    this.pending.clear();
+    this.byKey.clear();
+    this.chars = 0;
+  }
+
   private forget(entry: PendingCall): void {
     this.pending.delete(entry);
     this.chars -= entry.chars;

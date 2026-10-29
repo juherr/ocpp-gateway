@@ -24,6 +24,18 @@ describe("Correlator", () => {
     expect(c.answer("csms-a", "csms-to-cp", "m1")).toEqual(call("t1"));
   });
 
+  it("forgets every pending CALL on clear, and keeps working afterwards", () => {
+    const c = new Correlator();
+    c.clear();
+    c.call("csms-a", "cp-to-csms", "m1", call("t1"));
+    c.call("csms-b", "cp-to-csms", "m2", call("t2"));
+    c.clear();
+    expect(c.answer("csms-a", "csms-to-cp", "m1")).toBeUndefined();
+    expect(c.answer("csms-b", "csms-to-cp", "m2")).toBeUndefined();
+    c.call("csms-a", "cp-to-csms", "m1", call("t3"));
+    expect(c.answer("csms-a", "csms-to-cp", "m1")).toEqual(call("t3"));
+  });
+
   it("returns undefined for an orphan response", () => {
     expect(new Correlator().answer("csms-a", "csms-to-cp", "nope")).toBeUndefined();
   });

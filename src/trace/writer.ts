@@ -15,9 +15,10 @@ const log = createLogger("trace");
  */
 export interface TraceSink {
   /**
-   * Whether the sink wants documents right now; absent means always. Checked
-   * once per frame on the forwarding path, so it must be cheap: while no sink
-   * of a session is active, its frames are neither decoded nor correlated.
+   * Whether the sink wants documents right now; absent means always. Called
+   * once per frame on the forwarding path: it must be cheap and never throw.
+   * While no sink of a session is active, its frames are neither decoded nor
+   * correlated, and its pending CALLs are forgotten.
    */
   active?(): boolean;
   /** Take ownership of `doc`; false when it was not accepted (it will never be stored). */

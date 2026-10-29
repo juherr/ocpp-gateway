@@ -184,6 +184,15 @@ export class SessionTracer {
     return this.deps.now();
   }
 
+  /**
+   * @internal A frame was committed while no sink was active: it is never
+   * decoded, so the pending CALLs can no longer be trusted. Only reachable
+   * through a sink with `active()`.
+   */
+  idle(): void {
+    this.correlator.clear();
+  }
+
   /** @internal The sinks that want this frame, checked once per frame on commit. */
   activeSinks(): TraceSink[] {
     return this.sinks.filter((sink) => sink.active?.() ?? true);
@@ -203,10 +212,11 @@ export class SessionTracer {
     // Only a CALL some sink accepted may be pointed to by a response. With
     // several sinks, a response stored by one may thus point to a CALL only
     // another one accepted (the archive may have dropped it under load).
-    // While no sink is active, frames are not decoded at all: a CALL is not
-    // registered, so its response is stored uncorrelated; a response consumes
-    // no CALL, which stays in the (bounded) correlator and may still answer a
-    // later response reusing its messageId.
+    // While no sink is active, frames are not decoded at all, and every
+    // pending CALL is forgotten (see idle()): an unseen response could have
+    // consumed it, so it must not answer a later response reusing its id. A
+    // CALL committed just before the sinks go idle thus loses its
+    // correlation, which is honest: a frame went unseen in between.
     if (accepted.length > 0 && doc.kind === "trace" && doc.trace.messageType === "CALL") {
       const { messageId, action } = doc.trace;
       for (const conversation of routing.callConversations) {
@@ -331,7 +341,10 @@ class PendingFrame implements ReceivedFrame {
     this.reception = null;
     // Nobody wants it (e.g. a live viewer with no client): skip all decoding.
     const sinks = this.tracer.activeSinks();
-    if (sinks.length === 0) return;
+    if (sinks.length === 0) {
+      this.tracer.idle();
+      return;
+    }
     const doc = this.tracer.build(reception);
     // A copy: the sink owns the document, the states stay ours.
     doc.deliveries = this.states.slice() as Delivery[];
