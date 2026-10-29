@@ -108,6 +108,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `debug`, sparing the forwarding path that work on large frames.
 - The Docker image and `npm start` run Node with `--enable-source-maps`, so
   stack traces (in logs and in Sentry) point to the TypeScript sources.
+- A `.dockerignore` keeps `.git`, `node_modules`, build output and local
+  secrets (`.env`, `routes.json`, Wrangler files) out of the Docker build
+  context, for Compose and the Cloudflare container alike.
 - On shutdown, charger sessions are torn down immediately instead of after
   each charger's close handshake, so upstream links close sooner.
 
