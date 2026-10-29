@@ -471,7 +471,7 @@ describe("ChargerConnection trace capture", () => {
       undefined,
       MAX_PAYLOAD,
       onEnd,
-      sink,
+      [sink],
     );
     const [primary, ...mirrors] = outbound;
     const send = (raw: string) => charger.emit("message", Buffer.from(raw), false);
@@ -711,7 +711,7 @@ describe("ChargerConnection lifecycle hooks", () => {
       undefined,
       MAX_PAYLOAD,
       () => (hooks.ended += 1),
-      undefined,
+      [],
       () => (hooks.primaryOpened += 1),
     );
     return { hooks, charger, conn, primary: outbound[0] };

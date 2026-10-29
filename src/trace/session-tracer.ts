@@ -19,15 +19,6 @@ import {
 } from "./record";
 import type { TraceSink } from "./writer";
 
-/** One sink, or several fed with the same documents (e.g. archive and live viewer). */
-export type TraceSinks = TraceSink | readonly TraceSink[];
-
-/** The sinks as a list; `"insert" in` tells a single sink from an array. */
-export function toSinkList(sinks: TraceSinks | undefined): readonly TraceSink[] {
-  if (sinks === undefined) return [];
-  return "insert" in sinks ? [sinks] : sinks;
-}
-
 /** What a tracer knows about its session; fixed for the session's lifetime. */
 export interface SessionTracerContext {
   sessionId: string;
@@ -107,15 +98,13 @@ export class SessionTracer {
   private readonly primaryRouting: FrameRouting;
   private readonly secondaryRoutings = new Map<string, FrameRouting>();
   private seq = 0;
-  private readonly sinks: readonly TraceSink[];
 
   constructor(
     private readonly context: SessionTracerContext,
-    /** Where documents go: one sink, or several fed with the same documents. */
-    sinks: TraceSinks,
+    /** Where documents go, all fed with the same documents (e.g. archive and live viewer). */
+    private readonly sinks: readonly TraceSink[],
     private readonly deps: SessionTracerDeps = { now: () => new Date(), newId: randomUUID },
   ) {
-    this.sinks = toSinkList(sinks);
     const { chargePointId, primaryId, secondaryIds } = context;
     this.ocppVersion = ocppVersionOf(context.protocol);
     this.chargerRouting = {

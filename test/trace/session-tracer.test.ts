@@ -28,7 +28,7 @@ function setup(context: Partial<SessionTracerContext> = {}, start = T0) {
       secondaryIds: ["mirror-1", "mirror-2"],
       ...context,
     },
-    sink,
+    [sink],
     { now: () => new Date(now++), newId: () => `trace-${++ids}` },
   );
   return { sink, tracer };
@@ -562,7 +562,7 @@ describe("SessionTracer against the reference fixtures", () => {
           primaryId: "csms",
           secondaryIds: [],
         },
-        sink,
+        [sink],
         { now: () => new Date(fixture.records[i].timestamp as string), newId: () => `t${i}` },
       );
       for (; i < fixture.records.length; i++) {
