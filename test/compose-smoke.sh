@@ -7,17 +7,12 @@ project_dir="$temp_root/project"
 project_name="ocpp-compose-smoke-$$"
 
 mkdir -p "$project_dir"
-cp "$repo_root/Dockerfile" \
-  "$repo_root/package.json" \
-  "$repo_root/package-lock.json" \
-  "$repo_root/tsconfig.json" \
-  "$repo_root/tsconfig.web.json" \
-  "$repo_root/vite.config.ts" \
-  "$repo_root/docker-compose.yml" \
-  "$repo_root/docker-compose.local.yml" \
-  "$project_dir/"
-cp -R "$repo_root/src" "$project_dir/src"
-cp -R "$repo_root/web" "$project_dir/web"
+# The working tree as git sees it (tracked and untracked files, ignored ones
+# left out: no local routes.json, .env nor node_modules), so the build gets
+# whatever the Dockerfile copies without this list having to mirror it.
+git -C "$repo_root" ls-files -co --exclude-standard -z |
+  tar -C "$repo_root" --null -T - -cf - |
+  tar -C "$project_dir" -xf -
 
 cat > "$project_dir/.env" <<'EOF'
 PORT=19001
