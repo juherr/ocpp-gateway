@@ -4,16 +4,23 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   RouteStore,
+  type RouteTable,
   buildTargetUrl,
-  isTraced,
-  isViewed,
+  disabledScopes,
+  isScopeEnabled,
   loadRouteTable,
   parseRouteTable,
   resolveRoute,
-  untracedScopes,
-  unviewedScopes,
 } from "../src/routes";
+import type { TenantId } from "../src/tenants";
 import { captureReports } from "./memory-reporter";
+
+const isTraced = (table: RouteTable, tenantId: TenantId | null) =>
+  isScopeEnabled(table, "trace", tenantId);
+const isViewed = (table: RouteTable, tenantId: TenantId | null) =>
+  isScopeEnabled(table, "viewer", tenantId);
+const untracedScopes = (table: RouteTable) => disabledScopes(table, "trace");
+const unviewedScopes = (table: RouteTable) => disabledScopes(table, "viewer");
 
 const TABLE = {
   default: {

@@ -3,6 +3,7 @@ import { version } from "../package.json";
 import type { LoggerConfig, LogLevel } from "./logger";
 import { DEFAULT_DEBUG_MESSAGE_MAX_LENGTH, DEFAULT_LOG_LEVEL, LOG_LEVELS } from "./logger";
 import { parseHostname } from "./tenants";
+import { hasControlCharacter } from "./utils/text";
 import {
   parseBoolean,
   parseEnv,
@@ -215,8 +216,7 @@ function credentialParser(allowColon: boolean) {
     }
     // RFC 7617: the user-id ends at the first colon, and neither part may
     // carry a control character.
-    const hasControl = [...value].some((char) => char < " " || char === "\u007f");
-    if (hasControl || (!allowColon && value.includes(":"))) {
+    if (hasControlCharacter(value) || (!allowColon && value.includes(":"))) {
       throw new Error(
         allowColon
           ? "must not contain a control character"

@@ -1,4 +1,5 @@
 import { constantTimeEqual } from "../utils/secrets";
+import { hasControlCharacter } from "../utils/text";
 
 /** HTTP Basic credentials. May carry credentials: never log them. */
 export interface BasicCredentials {
@@ -9,10 +10,6 @@ export interface BasicCredentials {
 /** RFC 7617 credentials: strict, padded base64 (token68 restricted to the base64 alphabet). */
 const BASIC_AUTHORIZATION = /^basic +([A-Za-z0-9+/]+={0,2})$/i;
 const utf8 = new TextDecoder("utf-8", { fatal: true });
-
-function hasControlCharacter(value: string): boolean {
-  return [...value].some((char) => char < " " || char === "\u007f");
-}
 
 /**
  * The credentials of an `Authorization: Basic …` header value, or `null` when

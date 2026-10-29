@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import type { ViewerConfig } from "../config";
 import { createLogger } from "../logger";
 import { readSingleHeader } from "../tenants";
-import { clientSource } from "../utils/ip";
+import { requestSource } from "../utils/ip";
 import {
   type AuthFailureLimiterOptions,
   AuthFailureLimiter,
@@ -65,23 +65,19 @@ const body = (contentType: string, text: string): Body => ({
   bytes: Buffer.from(text, "utf8"),
 });
 
+/** The fixed error responses, built once. */
+const BAD_REQUEST = body(TEXT, "Bad Request\n");
+const UNAUTHORIZED = body(TEXT, "Unauthorized\n");
+const NOT_FOUND = body(TEXT, "Not Found\n");
+const METHOD_NOT_ALLOWED = body(TEXT, "Method Not Allowed\n");
+const TOO_MANY_REQUESTS = body(TEXT, "Too Many Requests\n");
+const INTERNAL_SERVER_ERROR = body(TEXT, "Internal Server Error\n");
+
 function hasHeader(rawHeaders: readonly string[], name: string): boolean {
   for (let i = 0; i < rawHeaders.length; i += 2) {
     if (rawHeaders[i].toLowerCase() === name) return true;
   }
   return false;
-}
-
-/**
- * The key a request is rate-limited under: the client IP header when one is
- * configured (exactly one value, a bare IP address), otherwise the socket
- * address; `null` when there is none, which fails closed.
- */
-function requestSource(req: IncomingMessage, clientIpHeader: string | undefined): string | null {
-  const address = clientIpHeader
-    ? readSingleHeader(req.rawHeaders, clientIpHeader)
-    : (req.socket.remoteAddress ?? null);
-  return address === null ? null : clientSource(address);
 }
 
 /**
@@ -126,13 +122,13 @@ export function startViewer(config: ViewerConfig, deps: ViewerDeps): ViewerServe
   const handle = (req: IncomingMessage, res: ServerResponse) => {
     for (const [name, value] of SECURITY_HEADERS) res.setHeader(name, value);
 
-    const source = requestSource(req, config.clientIpHeader);
-    if (source === null) return send(req, res, 400, body(TEXT, "Bad Request\n"));
+    const { source } = requestSource(req, config.clientIpHeader);
+    if (source === null) return send(req, res, 400, BAD_REQUEST);
 
     const retryAfterMs = limiter.retryAfterMs(source);
     if (retryAfterMs > 0) {
       res.setHeader("Retry-After", String(Math.ceil(retryAfterMs / 1000)));
-      return send(req, res, 429, body(TEXT, "Too Many Requests\n"));
+      return send(req, res, 429, TOO_MANY_REQUESTS);
     }
 
     // A duplicated header reads as none, and fails like a wrong one.
@@ -142,12 +138,12 @@ export function startViewer(config: ViewerConfig, deps: ViewerDeps): ViewerServe
       // malformed attempt counts towards the limit.
       if (hasHeader(req.rawHeaders, "authorization")) recordFailure(source);
       res.setHeader("WWW-Authenticate", REALM_CHALLENGE);
-      return send(req, res, 401, body(TEXT, "Unauthorized\n"));
+      return send(req, res, 401, UNAUTHORIZED);
     }
 
     if (req.method !== "GET" && req.method !== "HEAD") {
       res.setHeader("Allow", "GET, HEAD");
-      return send(req, res, 405, body(TEXT, "Method Not Allowed\n"));
+      return send(req, res, 405, METHOD_NOT_ALLOWED);
     }
 
     // An exact match on the path: `//viewer.js` is not `/viewer.js`.
@@ -156,7 +152,7 @@ export function startViewer(config: ViewerConfig, deps: ViewerDeps): ViewerServe
     const path = query === -1 ? url : url.slice(0, query);
     if (path === "/events" && deps.events) return deps.events(req, res);
     const content = routes.get(path);
-    if (!content) return send(req, res, 404, body(TEXT, "Not Found\n"));
+    if (!content) return send(req, res, 404, NOT_FOUND);
     send(req, res, 200, content);
   };
 
@@ -168,7 +164,7 @@ export function startViewer(config: ViewerConfig, deps: ViewerDeps): ViewerServe
       // every charger session along with the process.
       log.error("viewer request failed", undefined, { report: true, cause: err });
       if (res.headersSent) res.destroy();
-      else send(req, res, 500, body(TEXT, "Internal Server Error\n"));
+      else send(req, res, 500, INTERNAL_SERVER_ERROR);
     }
   });
 
