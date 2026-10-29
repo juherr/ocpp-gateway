@@ -11,11 +11,13 @@ cp "$repo_root/Dockerfile" \
   "$repo_root/package.json" \
   "$repo_root/package-lock.json" \
   "$repo_root/tsconfig.json" \
+  "$repo_root/tsconfig.web.json" \
   "$repo_root/vite.config.ts" \
   "$repo_root/docker-compose.yml" \
   "$repo_root/docker-compose.local.yml" \
   "$project_dir/"
 cp -R "$repo_root/src" "$project_dir/src"
+cp -R "$repo_root/web" "$project_dir/web"
 
 cat > "$project_dir/.env" <<'EOF'
 PORT=19001
