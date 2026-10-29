@@ -480,7 +480,7 @@ Traces contain whole OCPP payloads: RFID tags (`idTag`), transaction and meter d
 
 ## Live trace viewer (optional)
 
-With `VIEWER_ENABLED=true`, the gateway starts a second, read-only HTTP server for operators, apart from the OCPP port: by default on `127.0.0.1:9001`. It does not need MongoDB and does not enable trace archiving, and charger traffic is forwarded exactly as without it. It streams the OCPP frames live (below); this release serves a placeholder page, the viewer UI follows.
+With `VIEWER_ENABLED=true`, the gateway starts a second, read-only HTTP server for operators, apart from the OCPP port: by default on `127.0.0.1:9001`. It does not need MongoDB and does not enable trace archiving, and charger traffic is forwarded exactly as without it. It shows the OCPP frames live in a web page, from the [live stream](#the-live-stream) below.
 
 ```bash
 VIEWER_ENABLED=true \
@@ -494,7 +494,20 @@ The gateway refuses to start when the viewer is enabled without a username or a 
 
 **Backend ids are required**, as with archiving: the viewer names each CSMS by its backend `id`, so with the viewer enabled the gateway refuses to start if a backend has no `id`, and a hot reload that removes one is rejected. `viewer: false` keeps a scope out of the viewer (see [Multi-tenant routing](#multi-tenant-routing)).
 
-**The live stream.** `GET /events` (authenticated like every route) is a [Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html) stream of the frames received from then on, by chargers, primary and secondary CSMS, of every scope not set to `viewer: false`:
+### The page
+
+Open `http://127.0.0.1:9001/` (or wherever the viewer is exposed) and enter the viewer's credentials. The page is served by the gateway itself, with no third-party script, and works from what it receives while it is open:
+
+- **The list** shows every frame in reception order, newest at the bottom: time (`HH:MM:SS.mmm`, local time), charge point, action (for a response, the action of the CALL it answers, in italics, when the gateway correlated it), message id and OCPP version, type (`CALL`, `CALLRESULT`, `CALLERROR`, or `unparsed` with its reason for a frame Open OCPP Trace cannot represent), direction (↑ charger to CSMS, ↓ CSMS to charger), tenant (`—` in the global scope), source (`charger`, `primary <id>`, `secondary <id>`, the latter marked `ignored`: shown, never forwarded) and a delivery status. A frame appears once, however many destinations it was routed to. A value the trace does not have is shown as `—`, never guessed. The counters show the messages received since the page was opened and the sessions among the messages kept.
+- **The delivery status** sums up the frame's destinations: `failed` if any failed, otherwise `dropped` if any was dropped, otherwise the least advanced one (`queued`, `submitted`, then `written` once every destination is written); `—` for a frame routed nowhere (a secondary's). It updates as outcomes arrive. `written` means written to the socket, not acknowledged by the CSMS or the charger.
+- **The detail**, on selecting a row: the Open OCPP Trace fields (schema version, timestamp, OCPP version, charge point, direction, type, message id, action, the payload as formatted JSON, the error of a `CALLERROR`), the gateway's metadata (tenant, session, trace id, sequence, source, destinations, correlation, ignored), each destination's delivery (target, role, status, last update, reason) and the raw frame, with buttons to copy the record as JSON or the raw frame. Unparsed frames show their reason and raw content. The detail follows the selected frame's delivery updates.
+- **The buffer** keeps the last `VIEWER_MAX_BUFFERED_MESSAGES` entries (messages and gap markers) in the browser; older ones are dropped from the page. Nothing is stored on the server.
+- **The connection state**, next to the title: `Connecting…`, `Live`, `Disconnected` (with the time until the next attempt), `Reconnecting…`, or `Authentication failed`. The page reconnects by itself after an interruption, waiting 1 s, then twice as long after each failure up to 30 s (randomised, and at least the server's `Retry-After`), and starting over at 1 s once a connection has lasted 10 s. Wrong credentials stop the retries: reload the page to enter them again. Messages already shown stay available in every state.
+- **Gaps.** Every interruption adds a marker: *possible gap between t1 and t2*, noting when the gateway restarted meanwhile. Frames received by the gateway during an interruption are never recovered (there is no history), and the delivery statuses already shown may miss updates sent meanwhile. When the gateway drops events for a page that falls behind, a marker says how many events were missed. Back-to-back markers of the same kind are merged.
+
+### The live stream
+
+`GET /events` (authenticated like every route) is a [Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html) stream of the frames received from then on, by chargers, primary and secondary CSMS, of every scope not set to `viewer: false`:
 
 - `hello` — sent first: `{ serverTime, startedAt, maxBufferedMessages }` (ISO timestamps; `startedAt` is when this gateway instance started).
 - `trace` — one per received frame, however many destinations it was routed to: the trace document as JSON (`id`, `kind`, `tenantId`, `sessionId`, `chargePointId`, `seq`, `receivedAt`, `deliveries`, and the Open OCPP Trace v1.1 record under `trace`, or `frame` for a frame v1.1 cannot represent). Secondary CSMS responses are included, with `meta.gateway.ignored`. Each `trace` event has an SSE `id`, increasing across the whole instance.
@@ -504,7 +517,7 @@ The gateway refuses to start when the viewer is enabled without a username or a 
 
 There is no history: a client only sees what is received while it is connected, and `Last-Event-ID` is ignored, so a reconnecting client has a gap the stream cannot fill. While no client is connected, the viewer adds no capture work. A client that does not keep up loses events instead of slowing the gateway: once 4 × `MAX_MESSAGE_BYTES` are waiting to be sent to it, or when an event would take what is waiting past 11 × `MAX_MESSAGE_BYTES`, the event is dropped (counted, then reported by a `gap` event when it catches up). An event carries its frame twice, escaped: usually 2 to 3 times the frame's size, up to about 6 times for a frame of control characters, so every frame still reaches a client that keeps up. A client is disconnected at its 1000th drop in a row, or once it has been dropping for 30 s. At most `VIEWER_MAX_CLIENTS` streams run at once (the next gets `503`), so the stream holds at most `VIEWER_MAX_CLIENTS` × 11 × `MAX_MESSAGE_BYTES` in memory (55 MiB with the defaults). The counters `sent` (events written), `dropped` and `endedSlow` (clients disconnected for being too slow) are logged at shutdown.
 
-**Security.**
+### Security
 
 - Every route — the page, its assets, `GET /api/config`, even an unknown path — requires HTTP Basic authentication: no content is served without it (only a `400` for an unusable client IP header, or a `429` for a blocked source, may come before the credentials are checked, and neither carries content). Credentials are compared in constant time and never logged.
 - A source (IP address) with 10 wrong or malformed attempts within a minute gets `429 Too Many Requests` with `Retry-After` until that minute is over, even with the right credentials. Failed attempts are logged once per source and minute, without the credentials tried.
