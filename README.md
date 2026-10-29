@@ -492,6 +492,8 @@ ROUTES_FILE=./routes.json npm start
 
 The gateway refuses to start when the viewer is enabled without a username or a password, when `VIEWER_PORT` equals `PORT`, or when the viewer port cannot be bound. See [Configuration](#configuration) for every `VIEWER_*` variable.
 
+**Backend ids are required**, as with archiving: the viewer names each CSMS by its backend `id`, so with the viewer enabled the gateway refuses to start if a backend has no `id`, and a hot reload that removes one is rejected. `viewer: false` keeps a scope out of the viewer (see [Multi-tenant routing](#multi-tenant-routing)).
+
 **Security.**
 
 - Every route — the page, its assets, `GET /api/config`, even an unknown path — requires HTTP Basic authentication; there is no anonymous access. Credentials are compared in constant time and never logged.

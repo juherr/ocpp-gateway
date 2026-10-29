@@ -52,8 +52,9 @@ async function main() {
   };
 
   // Traces name each CSMS by its backend id, never by its URL: every trace
-  // consumer (today the archive) needs them in every route, on every reload.
-  const requireBackendIds = config.trace !== undefined;
+  // consumer (the archive, the live viewer) needs them in every route, on
+  // every reload.
+  const requireBackendIds = config.trace !== undefined || config.viewer !== undefined;
   let routes: RouteStore;
   try {
     routes = RouteStore.load(config.routesFile, { requireBackendIds });

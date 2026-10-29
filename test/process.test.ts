@@ -84,11 +84,17 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+const ROUTES_WITHOUT_IDS = { default: { primary: "ws://127.0.0.1:1/ocpp" } };
+
 /** Start the bundle; `preload` is CommonJS run before it (`node -r`). */
-function startGateway(env: Record<string, string>, preload?: string) {
+function startGateway(
+  env: Record<string, string>,
+  preload?: string,
+  routes: object = ROUTES_WITHOUT_IDS,
+) {
   dir = mkdtempSync(join(tmpdir(), "ocpp-gateway-process-"));
   routesFile = join(dir, "routes.json");
-  writeFileSync(routesFile, JSON.stringify({ default: { primary: "ws://127.0.0.1:1/ocpp" } }));
+  writeFileSync(routesFile, JSON.stringify(routes));
   const args = ["--enable-source-maps"];
   if (preload !== undefined) {
     const file = join(dir, "preload.cjs");
@@ -248,6 +254,7 @@ describe("gateway process with Sentry enabled", () => {
 describe("gateway process with the live trace viewer", () => {
   const USERNAME = "viewer-user-3e9b70";
   const PASSWORD = "viewer-pw-a61f0c";
+  const ROUTES_WITH_IDS = { default: { primary: { id: "csms", url: "ws://127.0.0.1:1/ocpp" } } };
   const authorization = `Basic ${Buffer.from(`${USERNAME}:${PASSWORD}`).toString("base64")}`;
 
   /** Whether something accepts TCP connections on `port`. */
@@ -286,13 +293,17 @@ describe("gateway process with the live trace viewer", () => {
     "serves the viewer behind Basic authentication, and shuts it down gracefully",
     async () => {
       const viewerPort = await freePort();
-      const { proc, exited, logged } = startGateway({
-        PORT: String(await freePort()),
-        VIEWER_ENABLED: "true",
-        VIEWER_USERNAME: USERNAME,
-        VIEWER_PASSWORD: PASSWORD,
-        VIEWER_PORT: String(viewerPort),
-      });
+      const { proc, exited, logged } = startGateway(
+        {
+          PORT: String(await freePort()),
+          VIEWER_ENABLED: "true",
+          VIEWER_USERNAME: USERNAME,
+          VIEWER_PASSWORD: PASSWORD,
+          VIEWER_PORT: String(viewerPort),
+        },
+        undefined,
+        ROUTES_WITH_IDS,
+      );
       await logged("viewer listening");
 
       const url = `http://127.0.0.1:${viewerPort}/`;
@@ -314,14 +325,36 @@ describe("gateway process with the live trace viewer", () => {
       await once(held, "listening");
       const { port } = held.address() as AddressInfo;
 
-      const { exited } = startGateway({
+      const { exited, logged } = startGateway(
+        {
+          PORT: String(await freePort()),
+          VIEWER_ENABLED: "true",
+          VIEWER_USERNAME: USERNAME,
+          VIEWER_PASSWORD: PASSWORD,
+          VIEWER_PORT: String(port),
+        },
+        undefined,
+        ROUTES_WITH_IDS,
+      );
+
+      await logged("viewer server error");
+      expect(await exited).toBe(1);
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    "requires backend ids in the routes file",
+    async () => {
+      const { exited, logged } = startGateway({
         PORT: String(await freePort()),
         VIEWER_ENABLED: "true",
         VIEWER_USERNAME: USERNAME,
         VIEWER_PASSWORD: PASSWORD,
-        VIEWER_PORT: String(port),
+        VIEWER_PORT: String(await freePort()),
       });
 
+      await logged("failed to load routes file");
       expect(await exited).toBe(1);
     },
     TIMEOUT_MS,
