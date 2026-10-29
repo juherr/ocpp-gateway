@@ -49,6 +49,8 @@ export interface RouteScope {
   chargers: Map<string, Route>;
   /** Whether trace archiving (when enabled) records this scope's sessions. Default: true. */
   trace: boolean;
+  /** Whether the live viewer (when enabled) shows this scope's sessions. Default: true. */
+  viewer: boolean;
 }
 
 /**
@@ -165,6 +167,19 @@ function checkBackendIds(scope: RouteScope, label: string): void {
   }
 }
 
+/** A boolean switch of a scope (`trace`, `viewer`); default `true`. */
+function parseScopeFlag(
+  value: Record<string, unknown>,
+  name: "trace" | "viewer",
+  path: string,
+): boolean {
+  const flag = value[name] === undefined ? true : value[name];
+  if (typeof flag !== "boolean") {
+    throw new Error(`"${path}${name}" must be a boolean`);
+  }
+  return flag;
+}
+
 /** Parse the `default` and `chargers` of a scope found at `path` ("" for the root). */
 function parseScope(
   value: Record<string, unknown>,
@@ -172,11 +187,11 @@ function parseScope(
   options: RouteTableOptions,
 ): RouteScope {
   const chargersPath = `${path}chargers`;
-  const trace = value.trace === undefined ? true : value.trace;
-  if (typeof trace !== "boolean") {
-    throw new Error(`"${path}trace" must be a boolean`);
-  }
-  const scope: RouteScope = { chargers: new Map(), trace };
+  const scope: RouteScope = {
+    chargers: new Map(),
+    trace: parseScopeFlag(value, "trace", path),
+    viewer: parseScopeFlag(value, "viewer", path),
+  };
   if (value.chargers !== undefined) {
     if (!isPlainObject(value.chargers)) {
       throw new Error(`"${chargersPath}" must be an object keyed by chargeBoxId`);
@@ -295,6 +310,21 @@ export function untracedScopes(table: RouteTable): (TenantId | null)[] {
 }
 
 /**
+ * Whether the live viewer shows a session of this tenant (`null`: the global
+ * scope). Like `trace`, each scope has its own switch.
+ */
+export function isViewed(table: RouteTable, tenantId: TenantId | null): boolean {
+  const scope = tenantId === null ? table : table.tenants.get(tenantId);
+  return scope?.viewer ?? true;
+}
+
+/** The scopes excluded from the live viewer (`null`: the global scope), for logs. */
+export function unviewedScopes(table: RouteTable): (TenantId | null)[] {
+  const tenants = [...table.tenants].filter(([, scope]) => !scope.viewer).map(([id]) => id);
+  return table.viewer ? tenants : [null, ...tenants];
+}
+
+/**
  * Build the final upstream URL for a charger. Unless the backend opts out via
  * `appendChargeBoxId: false`, the (url-encoded) chargeBoxId is appended as a
  * path segment, trailing slashes are collapsed, and query parameters are kept.
@@ -382,6 +412,14 @@ export class RouteStore {
     return untracedScopes(this.table);
   }
 
+  isViewed(tenantId: TenantId | null): boolean {
+    return isViewed(this.table, tenantId);
+  }
+
+  unviewedScopes(): (TenantId | null)[] {
+    return unviewedScopes(this.table);
+  }
+
   /** The tenant that explicitly claims `hostname` (a custom domain), if any. */
   findTenantByHostname(hostname: string): TenantId | null {
     return this.table.hostnames.get(hostname) ?? null;
@@ -396,6 +434,7 @@ export class RouteStore {
         chargers: this.table.chargers.size,
         tenants: this.table.tenants.size,
         untraced: untracedScopes(this.table),
+        unviewed: unviewedScopes(this.table),
       });
     } catch (err) {
       log.error(

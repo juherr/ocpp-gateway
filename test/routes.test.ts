@@ -6,10 +6,12 @@ import {
   RouteStore,
   buildTargetUrl,
   isTraced,
+  isViewed,
   loadRouteTable,
   parseRouteTable,
   resolveRoute,
   untracedScopes,
+  unviewedScopes,
 } from "../src/routes";
 import { captureReports } from "./memory-reporter";
 
@@ -601,6 +603,81 @@ describe("trace selection per scope", () => {
         rmSync(dir, { recursive: true });
       }
     });
+  });
+});
+
+describe("live viewer selection per scope", () => {
+  const scoped = (root: object = {}, demo: object = {}) => ({
+    default: { primary: "wss://csms.example.com/ocpp" },
+    ...root,
+    tenants: {
+      "tenant-a": { default: { primary: "wss://csms-a.example.com/ocpp" } },
+      demo: { default: { primary: "wss://demo.example.com/ocpp" }, ...demo },
+    },
+  });
+
+  it("shows every scope by default", () => {
+    const table = parseRouteTable(scoped());
+    expect(isViewed(table, null)).toBe(true);
+    expect(isViewed(table, "tenant-a")).toBe(true);
+    expect(isViewed(table, "demo")).toBe(true);
+    expect(isViewed(table, "unknown")).toBe(true);
+    expect(unviewedScopes(table)).toEqual([]);
+  });
+
+  it("excludes only the tenant with viewer: false", () => {
+    const table = parseRouteTable(scoped({}, { viewer: false }));
+    expect(isViewed(table, "demo")).toBe(false);
+    expect(isViewed(table, "tenant-a")).toBe(true);
+    expect(isViewed(table, null)).toBe(true);
+    expect(unviewedScopes(table)).toEqual(["demo"]);
+  });
+
+  it("applies a root viewer: false to the global scope only, never to tenants", () => {
+    const table = parseRouteTable(scoped({ viewer: false }));
+    expect(isViewed(table, null)).toBe(false);
+    expect(isViewed(table, "tenant-a")).toBe(true);
+    expect(isViewed(table, "demo")).toBe(true);
+    expect(unviewedScopes(table)).toEqual([null]);
+  });
+
+  it("is independent of trace", () => {
+    const table = parseRouteTable(scoped({ trace: false }, { viewer: false }));
+    expect([isTraced(table, null), isViewed(table, null)]).toEqual([false, true]);
+    expect([isTraced(table, "demo"), isViewed(table, "demo")]).toEqual([true, false]);
+  });
+
+  it("accepts an explicit viewer: true", () => {
+    const table = parseRouteTable(scoped({ viewer: true }, { viewer: true }));
+    expect(unviewedScopes(table)).toEqual([]);
+  });
+
+  it.each([["false"], [0], [null]])("rejects a non-boolean viewer (%j)", (value) => {
+    expect(() => parseRouteTable(scoped({ viewer: value }))).toThrow(/"viewer" must be a boolean/);
+    expect(() => parseRouteTable(scoped({}, { viewer: value }))).toThrow(
+      /"tenants.demo.viewer" must be a boolean/,
+    );
+  });
+
+  it("follows a reload in the RouteStore, keeping the previous selection when invalid", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocpp-gateway-routes-"));
+    try {
+      const path = join(dir, "routes.json");
+      writeFileSync(path, JSON.stringify(scoped()));
+      const store = RouteStore.load(path);
+      expect(store.isViewed("demo")).toBe(true);
+
+      writeFileSync(path, JSON.stringify(scoped({}, { viewer: false })));
+      store.reload();
+      expect(store.isViewed("demo")).toBe(false);
+      expect(store.unviewedScopes()).toEqual(["demo"]);
+
+      writeFileSync(path, JSON.stringify(scoped({}, { viewer: "yes" })));
+      store.reload();
+      expect(store.isViewed("demo")).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
   });
 });
 
