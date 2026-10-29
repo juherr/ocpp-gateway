@@ -4,79 +4,41 @@
  * connection's state. `app.ts` only renders it.
  */
 
+import {
+  DELIVERY_STATUS_RANK,
+  type Delivery,
+  type DeliveryStatus,
+  type Destination,
+  type Direction,
+  type GatewayMeta,
+  type OcppTraceRecord,
+  type TraceDocument,
+  type TraceSource,
+  type UnparsedFrame,
+} from "../../src/trace/record";
+import { isPlainObject } from "../../src/utils/objects";
 import type { SseEvent } from "./sse";
 
 // --- What the gateway streams (src/trace/record.ts, dates as ISO strings) ---
 
-export type Direction = "cp-to-csms" | "csms-to-cp";
-export type DeliveryStatus = "queued" | "submitted" | "written" | "failed" | "dropped";
+export type { DeliveryStatus, Direction };
 
-export type WireSource =
-  | { type: "charge-point"; id: string }
-  | { type: "csms"; id: string; role: "primary" | "secondary" };
+/** A gateway type as it arrives over JSON: every `Date` an ISO string. */
+type Wire<T> = T extends Date
+  ? string
+  : T extends readonly (infer U)[]
+    ? Wire<U>[]
+    : T extends object
+      ? { [K in keyof T]: Wire<T[K]> }
+      : T;
 
-export interface WireDestination {
-  target: string;
-  role: "primary" | "secondary" | "charge-point";
-}
-
-export interface WireDelivery extends WireDestination {
-  status: DeliveryStatus;
-  reason?: string;
-  updatedAt: string;
-}
-
-export interface WireGatewayMeta {
-  traceId: string;
-  tenantId: string | null;
-  sessionId: string;
-  seq: number;
-  source: WireSource;
-  destinations: WireDestination[];
-  ignored?: true;
-  correlation?: { callTraceId: string; action: string };
-  binary?: true;
-}
-
-export interface WireTraceRecord {
-  schemaVersion: string;
-  timestamp: string;
-  ocppVersion?: string;
-  transport: "json";
-  chargePointId: string;
-  connectorId?: number;
-  direction: Direction;
-  messageType: "CALL" | "CALLRESULT" | "CALLERROR";
-  messageId: string;
-  action?: string;
-  payload?: unknown;
-  raw: string;
-  error?: { code: string; description: string; details?: unknown };
-  meta: { gateway: WireGatewayMeta };
-}
-
-export interface WireUnparsedFrame {
-  timestamp: string;
-  ocppVersion?: string;
-  chargePointId: string;
-  direction: Direction;
-  raw: string;
-  reason: string;
-  meta: { gateway: WireGatewayMeta };
-}
-
-interface WireDocumentBase {
-  id: string;
-  tenantId: string | null;
-  sessionId: string;
-  chargePointId: string;
-  seq: number;
-  receivedAt: string;
-  deliveries: WireDelivery[];
-}
-
-export type WireTraceDocument = WireDocumentBase &
-  ({ kind: "trace"; trace: WireTraceRecord } | { kind: "frame"; frame: WireUnparsedFrame });
+export type WireSource = Wire<TraceSource>;
+export type WireDestination = Wire<Destination>;
+export type WireDelivery = Wire<Delivery>;
+export type WireGatewayMeta = Wire<GatewayMeta>;
+export type WireTraceRecord = Wire<OcppTraceRecord>;
+export type WireUnparsedFrame = Wire<UnparsedFrame>;
+export type WireTraceDocument = Wire<TraceDocument>;
 
 export interface Hello {
   serverTime: string;
@@ -97,9 +59,6 @@ export type StreamEvent =
   | { type: "delivery"; update: DeliveryUpdate }
   | { type: "gap"; dropped: number };
 
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
 /** One stream event, typed; `null` for an unknown event or malformed data. */
 export function decodeEvent(event: SseEvent): StreamEvent | null {
   let data: unknown;
@@ -108,7 +67,7 @@ export function decodeEvent(event: SseEvent): StreamEvent | null {
   } catch {
     return null;
   }
-  if (!isObject(data)) return null;
+  if (!isPlainObject(data)) return null;
   switch (event.event) {
     case "hello":
       return typeof data.startedAt === "string"
@@ -117,12 +76,14 @@ export function decodeEvent(event: SseEvent): StreamEvent | null {
     case "trace":
       return typeof data.id === "string" &&
         Array.isArray(data.deliveries) &&
-        ((data.kind === "trace" && isObject(data.trace)) ||
-          (data.kind === "frame" && isObject(data.frame)))
+        ((data.kind === "trace" && isPlainObject(data.trace)) ||
+          (data.kind === "frame" && isPlainObject(data.frame)))
         ? { type: "trace", doc: data as unknown as WireTraceDocument }
         : null;
     case "delivery":
-      return typeof data.id === "string" && Number.isInteger(data.index) && isObject(data.delivery)
+      return typeof data.id === "string" &&
+        Number.isInteger(data.index) &&
+        isPlainObject(data.delivery)
         ? { type: "delivery", update: data as unknown as DeliveryUpdate }
         : null;
     case "gap":
@@ -138,15 +99,6 @@ export function decodeEvent(event: SseEvent): StreamEvent | null {
 
 /** Shown for a value the trace does not have: never invented. */
 export const NONE = "—";
-
-/** Statuses only move forward: queued → submitted → a final status. */
-export const DELIVERY_STATUS_RANK: Readonly<Record<DeliveryStatus, number>> = {
-  queued: 0,
-  submitted: 1,
-  written: 2,
-  failed: 2,
-  dropped: 2,
-};
 
 /**
  * One status for all of a message's destinations: `failed` if any failed,
@@ -283,8 +235,11 @@ export interface GapEntry {
 export type Entry = TraceEntry | GapEntry;
 
 export interface AddResult<T extends Entry> {
-  /** The entry added, or the gap an addition was merged into. */
-  added: T;
+  /**
+   * The entry listed, or the listed gap an addition was merged into; none
+   * while paused, when the store holds it unlisted.
+   */
+  added?: T;
   /** Entries pushed out by the capacity, oldest first. */
   evicted: Entry[];
 }
@@ -313,8 +268,10 @@ function weight(entry: Entry): number {
 /** How many buffered messages hold each value; `version` moves when the set of values does. */
 class ValueCounts<K> {
   private readonly counts = new Map<K, number>();
+  /** Moves whenever the set of values does. */
+  version = 0;
 
-  constructor(private readonly changed: () => void) {}
+  constructor(private readonly changed: () => void = () => undefined) {}
 
   get size(): number {
     return this.counts.size;
@@ -323,7 +280,7 @@ class ValueCounts<K> {
   add(value: K): void {
     const count = this.counts.get(value) ?? 0;
     this.counts.set(value, count + 1);
-    if (count === 0) this.changed();
+    if (count === 0) this.bump();
   }
 
   remove(value: K): void {
@@ -331,13 +288,18 @@ class ValueCounts<K> {
     if (count > 0) {
       this.counts.set(value, count);
     } else if (this.counts.delete(value)) {
-      this.changed();
+      this.bump();
     }
   }
 
   clear(): void {
-    if (this.counts.size > 0) this.changed();
+    if (this.counts.size > 0) this.bump();
     this.counts.clear();
+  }
+
+  private bump(): void {
+    this.version++;
+    this.changed();
   }
 
   values(): K[] {
@@ -367,6 +329,12 @@ class EntryQueue {
 
   get size(): number {
     return this.items.length - this.head;
+  }
+
+  /** The buffered entries, oldest first: the queue's own array, compacted, in key order. */
+  entries(): readonly Entry[] {
+    this.compact();
+    return this.items;
   }
 
   last(): Entry | undefined {
@@ -424,19 +392,24 @@ class EntryQueue {
  * message, listed or held.
  */
 export class TraceStore {
-  private items: Entry[] = [];
-  private head = 0;
+  private readonly listed = new EntryQueue();
   private readonly held = new EntryQueue();
   private heldMessages = 0;
   private isPaused = false;
   /** Every entry created since the pause is held. */
   private heldFromKey = Infinity;
   private readonly byId = new Map<string, TraceEntry>();
-  private readonly sessionCounts = new Map<string, number>();
+  private readonly sessionCounts = new ValueCounts<string>();
   private readonly tenantCounts = new ValueCounts<string | null>(() => this.observedVersion++);
   private readonly chargePointCounts = new ValueCounts<string>(() => this.observedVersion++);
   private readonly actionCounts = new ValueCounts<string>(() => this.observedVersion++);
   private readonly sourceCounts = new ValueCounts<string>(() => this.observedVersion++);
+  private readonly observedCounts = {
+    tenants: this.tenantCounts,
+    chargePointIds: this.chargePointCounts,
+    actions: this.actionCounts,
+    sources: this.sourceCounts,
+  };
   private nextKey = 1;
   /** Messages received since the page loaded. */
   received = 0;
@@ -446,8 +419,6 @@ export class TraceStore {
   evictedGaps = 0;
   /** Messages held while paused, then dropped by the bounds before the resume. */
   pendingDropped = 0;
-  /** The buffered messages' weight against `maxBytes`. */
-  bytes = 0;
   /** Changes whenever `observed()` would return another set of values. */
   observedVersion = 0;
 
@@ -459,6 +430,11 @@ export class TraceStore {
   /** Distinct sessions among the buffered messages, held ones included. */
   get sessions(): number {
     return this.sessionCounts.size;
+  }
+
+  /** The listed messages' weight against `maxBytes`. */
+  get bytes(): number {
+    return this.listed.bytes;
   }
 
   get paused(): boolean {
@@ -492,32 +468,42 @@ export class TraceStore {
     this.isPaused = false;
     const added = this.held.drain();
     this.heldMessages = 0;
-    for (const entry of added) {
-      this.items.push(entry);
-      this.bytes += weight(entry);
-    }
+    for (const entry of added) this.listed.push(entry);
     return { added, evicted: this.trim() };
   }
 
   /** The distinct values of the buffered messages (held ones included), sorted. */
   observed(): ObservedValues {
-    const tenants = this.tenantCounts.values();
-    const named = tenants.filter((t): t is string => t !== null).sort(byText);
     return {
-      tenants: tenants.includes(null) ? [null, ...named] : named,
-      chargePointIds: this.chargePointCounts.values().sort(byText),
-      actions: this.actionCounts.values().sort(byText),
-      sources: this.sourceCounts.values().sort(byText),
+      tenants: this.observedValues("tenants"),
+      chargePointIds: this.observedValues("chargePointIds"),
+      actions: this.observedValues("actions"),
+      sources: this.observedValues("sources"),
     };
   }
 
+  /** One kind of `observed()` values, sorted (messages without a tenant first). */
+  observedValues<K extends keyof ObservedValues>(kind: K): ObservedValues[K] {
+    if (kind === "tenants") {
+      const tenants = this.tenantCounts.values();
+      const named = tenants.filter((t): t is string => t !== null).sort(byText);
+      return (tenants.includes(null) ? [null, ...named] : named) as ObservedValues[K];
+    }
+    const counts = this.observedCounts[kind] as ValueCounts<string>;
+    return counts.values().sort(byText) as ObservedValues[K];
+  }
+
+  /** Moves whenever `observedValues(kind)` would return another set of values. */
+  observedVersionOf(kind: keyof ObservedValues): number {
+    return this.observedCounts[kind].version;
+  }
+
   get size(): number {
-    return this.items.length - this.head;
+    return this.listed.size;
   }
 
   entries(): readonly Entry[] {
-    this.compact();
-    return this.items;
+    return this.listed.entries();
   }
 
   get(id: string): TraceEntry | undefined {
@@ -535,37 +521,32 @@ export class TraceStore {
   }
 
   /**
-   * Lists a received message, or holds it while paused. `evicted`: the
-   * entries it pushed out, listed or held.
+   * Lists a received message, or holds it while paused (then no `added`).
+   * `evicted`: the entries it pushed out, listed or held.
    */
   addTrace(doc: WireTraceDocument): AddResult<TraceEntry> {
     const entry: TraceEntry = { kind: "trace", key: this.nextKey++, doc, summary: summarize(doc) };
     this.received++;
     this.byId.set(doc.id, entry);
-    this.sessionCounts.set(doc.sessionId, (this.sessionCounts.get(doc.sessionId) ?? 0) + 1);
+    this.sessionCounts.add(doc.sessionId);
     this.observe(entry, true);
     if (this.isPaused) {
       this.held.push(entry);
       this.heldMessages++;
-      return { added: entry, evicted: this.trimHeld() };
+      return { evicted: this.trimHeld() };
     }
-    this.bytes += weight(entry);
-    this.items.push(entry);
+    this.listed.push(entry);
     return { added: entry, evicted: this.trim() };
   }
 
   /**
    * Adds a gap marker, or extends the last entry when it is a gap of the same
    * kind: a connection that keeps failing never floods the buffer. Paused,
-   * the marker is held in its place among the held messages, and only a held
-   * gap is extended.
+   * the marker is held in its place among the held messages, only a held gap
+   * is extended, and nothing is `added`.
    */
   addGap(gap: NewGap): AddResult<GapEntry> {
-    const last = this.isPaused
-      ? this.held.last()
-      : this.size > 0
-        ? this.items[this.items.length - 1]
-        : undefined;
+    const last = (this.isPaused ? this.held : this.listed).last();
     if (last?.kind === "gap" && last.reason === gap.reason) {
       if (gap.reason === "missed") {
         last.missed = (last.missed ?? 0) + gap.missed;
@@ -573,7 +554,7 @@ export class TraceStore {
       } else {
         delete last.to;
       }
-      return { added: last, evicted: [] };
+      return this.isPaused ? { evicted: [] } : { added: last, evicted: [] };
     }
     const entry: GapEntry = {
       kind: "gap",
@@ -584,9 +565,9 @@ export class TraceStore {
     };
     if (this.isPaused) {
       this.held.push(entry);
-      return { added: entry, evicted: this.trimHeld() };
+      return { evicted: this.trimHeld() };
     }
-    this.items.push(entry);
+    this.listed.push(entry);
     return { added: entry, evicted: this.trim() };
   }
 
@@ -594,10 +575,7 @@ export class TraceStore {
   closeGap(at: string, restarted: boolean): GapEntry | undefined {
     const open = (entry: Entry): entry is GapEntry =>
       entry.kind === "gap" && entry.reason === "disconnected" && entry.to === undefined;
-    let found: Entry | undefined = this.held.findLast(open);
-    for (let i = this.items.length - 1; found === undefined && i >= this.head; i--) {
-      if (open(this.items[i])) found = this.items[i];
-    }
+    const found = this.held.findLast(open) ?? this.listed.findLast(open);
     if (found?.kind !== "gap") return undefined;
     found.to = at;
     found.restarted = (found.restarted ?? false) || restarted;
@@ -615,13 +593,11 @@ export class TraceStore {
     if (!entry) return undefined;
     const { deliveries } = entry.doc;
     if (!Number.isInteger(index) || index < 0 || index >= deliveries.length) return undefined;
+    if (!Object.hasOwn(DELIVERY_STATUS_RANK, delivery.status)) return undefined;
     const rank = DELIVERY_STATUS_RANK[delivery.status];
-    if (rank === undefined || !Object.hasOwn(DELIVERY_STATUS_RANK, delivery.status)) {
-      return undefined;
-    }
     if (rank <= DELIVERY_STATUS_RANK[deliveries[index].status]) return undefined;
     deliveries[index] = delivery;
-    entry.summary = { ...entry.summary, delivery: syntheticStatus(deliveries) };
+    entry.summary.delivery = syntheticStatus(deliveries);
     return entry;
   }
 
@@ -630,9 +606,7 @@ export class TraceStore {
    * pause; returns the listed entries removed.
    */
   clear(): Entry[] {
-    const removed = this.items.slice(this.head);
-    this.items = [];
-    this.head = 0;
+    const removed = this.listed.drain();
     this.held.drain();
     this.heldMessages = 0;
     this.byId.clear();
@@ -641,21 +615,19 @@ export class TraceStore {
     this.chargePointCounts.clear();
     this.actionCounts.clear();
     this.sourceCounts.clear();
-    this.bytes = 0;
     return removed;
   }
 
   private trim(): Entry[] {
     const evicted: Entry[] = [];
-    while (this.size > this.capacity || (this.bytes > this.maxBytes && this.size > 1)) {
-      const entry = this.items[this.head++];
+    const { listed } = this;
+    while (listed.size > this.capacity || (listed.bytes > this.maxBytes && listed.size > 1)) {
+      const entry = listed.shift();
       evicted.push(entry);
-      this.bytes -= weight(entry);
       this.forget(entry);
       if (entry.kind === "trace") this.evictedMessages++;
       else this.evictedGaps++;
     }
-    if (this.head > 1024 && this.head * 2 > this.items.length) this.compact();
     return evicted;
   }
 
@@ -682,9 +654,7 @@ export class TraceStore {
   private forget(entry: Entry): void {
     if (entry.kind !== "trace") return;
     this.byId.delete(entry.doc.id);
-    const count = (this.sessionCounts.get(entry.doc.sessionId) ?? 1) - 1;
-    if (count > 0) this.sessionCounts.set(entry.doc.sessionId, count);
-    else this.sessionCounts.delete(entry.doc.sessionId);
+    this.sessionCounts.remove(entry.doc.sessionId);
     this.observe(entry, false);
   }
 
@@ -695,12 +665,6 @@ export class TraceStore {
     this.chargePointCounts[op](summary.chargePointId);
     this.sourceCounts[op](summary.source);
     if (summary.action !== NONE) this.actionCounts[op](summary.action);
-  }
-
-  private compact(): void {
-    if (this.head === 0) return;
-    this.items = this.items.slice(this.head);
-    this.head = 0;
   }
 }
 
@@ -779,23 +743,28 @@ export function filterPredicate(filter: FilterState): (entry: Entry) => boolean 
     if (filter.action && s.action !== filter.action) return false;
     if (filter.source && s.source !== filter.source) return false;
     if (messageId && (s.messageId === NONE || !contains(s.messageId, messageId))) return false;
-    if (filter.delivery === "none" && doc.deliveries.length > 0) return false;
-    if (
-      filter.delivery &&
-      filter.delivery !== "none" &&
-      !doc.deliveries.some((d) => d.status === filter.delivery)
-    ) {
+    if (filter.delivery === "none") {
+      if (doc.deliveries.length > 0) return false;
+    } else if (filter.delivery && !doc.deliveries.some((d) => d.status === filter.delivery)) {
       return false;
     }
-    if (text) {
-      const metadata = [doc.id, doc.tenantId ?? "", s.sessionId, s.chargePointId, s.type, s.source];
-      if (s.action !== NONE) metadata.push(s.action);
-      if (s.messageId !== NONE) metadata.push(s.messageId);
-      if (s.reason !== undefined) metadata.push(s.reason);
-      if (!metadata.some((value) => contains(value, text))) return false;
-    }
-    return true;
+    return !text || metadataContains(entry, text);
   };
+}
+
+/** Whether a message's metadata (see `FilterState.text`) holds `text`, already lowercased. */
+function metadataContains({ doc, summary: s }: TraceEntry, text: string): boolean {
+  return (
+    contains(doc.id, text) ||
+    (doc.tenantId !== null && contains(doc.tenantId, text)) ||
+    contains(s.sessionId, text) ||
+    contains(s.chargePointId, text) ||
+    contains(s.type, text) ||
+    contains(s.source, text) ||
+    (s.action !== NONE && contains(s.action, text)) ||
+    (s.messageId !== NONE && contains(s.messageId, text)) ||
+    (s.reason !== undefined && contains(s.reason, text))
+  );
 }
 
 // --- Membership changes of listed messages ---
@@ -815,18 +784,16 @@ export interface MembershipChanges {
 
 /**
  * Which rows come or go when messages already listed changed (a delivery
- * update under a delivery filter). Paused, nothing does: the list stays
- * frozen until the resume.
+ * update under a delivery filter). Not to be called while paused: the list
+ * stays frozen until the resume.
  */
 export function membershipChanges(
   listed: readonly Entry[],
   isShown: (key: number) => boolean,
   changed: Iterable<TraceEntry>,
   visible: (entry: Entry) => boolean,
-  paused: boolean,
 ): MembershipChanges {
   const changes: MembershipChanges = { insert: [], remove: [] };
-  if (paused) return changes;
   const entering: TraceEntry[] = [];
   const leaving = new Set<number>();
   for (const entry of changed) {
@@ -881,17 +848,18 @@ export function listedEntries(
  * v1.1, exactly as streamed, gateway metadata included, delivery outcomes
  * not: they are not part of the record) or unparsed frames (`frame`), one per
  * line in list order. Gap markers and the other kind are left out; nothing is
- * modified.
+ * modified. One part per line, newline included: a `Blob` joins them without
+ * building one large string.
  */
-export function toJsonl(entries: readonly Entry[], kind: "trace" | "frame"): string {
-  let out = "";
+export function jsonlLines(entries: readonly Entry[], kind: "trace" | "frame"): string[] {
+  const lines: string[] = [];
   for (const entry of entries) {
     if (entry.kind !== "trace") continue;
     const { doc } = entry;
-    if (kind === "trace" && doc.kind === "trace") out += `${JSON.stringify(doc.trace)}\n`;
-    else if (kind === "frame" && doc.kind === "frame") out += `${JSON.stringify(doc.frame)}\n`;
+    if (kind === "trace" && doc.kind === "trace") lines.push(`${JSON.stringify(doc.trace)}\n`);
+    else if (kind === "frame" && doc.kind === "frame") lines.push(`${JSON.stringify(doc.frame)}\n`);
   }
-  return out;
+  return lines;
 }
 
 /** `ocpp-traces-<ISO time>.jsonl` (or `ocpp-unparsed-frames-…`), colons replaced for every OS. */
@@ -946,10 +914,6 @@ export class RenderQueue {
       this.changed.delete(key);
       if (this.rendered(key)) this.removed.add(key);
     }
-  }
-
-  get empty(): boolean {
-    return this.added.size === 0 && this.changed.size === 0 && this.removed.size === 0;
   }
 
   take(): RenderBatch {

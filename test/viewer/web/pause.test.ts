@@ -15,13 +15,14 @@ describe("TraceStore pause", () => {
     const { added, evicted } = store.addTrace(held);
 
     expect(store.paused).toBe(true);
-    expect(added.doc).toBe(held);
+    // Held, not listed: nothing for the page to draw.
+    expect(added).toBeUndefined();
     expect(evicted).toEqual([]);
     expect(keys(store.entries())).toEqual([before.id]);
     expect(store.size).toBe(1);
     expect(store.pendingMessages).toBe(1);
     expect(store.received).toBe(2);
-    expect(store.get(held.id)).toBe(added);
+    expect(store.get(held.id)?.doc).toBe(held);
   });
 
   it("lists the held messages on resume, in reception order", () => {
@@ -128,9 +129,11 @@ describe("TraceStore pause", () => {
     store.pause();
     const before = callDoc();
     store.addTrace(before);
-    const { added: gap } = store.addGap({ reason: "disconnected", at: "2026-10-29T14:33:00Z" });
+    const { added } = store.addGap({ reason: "disconnected", at: "2026-10-29T14:33:00Z" });
+    expect(added).toBeUndefined();
+    const gap = store.closeGap("2026-10-29T14:33:05Z", false)!;
+    expect(gap).toMatchObject({ kind: "gap", reason: "disconnected" });
     expect(store.isPending(gap)).toBe(true);
-    expect(store.closeGap("2026-10-29T14:33:05Z", false)).toBe(gap);
     const after = callDoc();
     store.addTrace(after);
     expect(store.entries()).toEqual([]);
@@ -148,15 +151,12 @@ describe("TraceStore pause", () => {
       missed: 2,
     });
     store.pause();
-    const { added: held } = store.addGap({
-      reason: "missed",
-      at: "2026-10-29T14:33:01Z",
-      missed: 3,
-    });
-    expect(held).not.toBe(listedGap);
-    expect(listedGap.missed).toBe(2);
+    store.addGap({ reason: "missed", at: "2026-10-29T14:33:01Z", missed: 3 });
     store.addGap({ reason: "missed", at: "2026-10-29T14:33:02Z", missed: 1 });
-    expect(held.missed).toBe(4);
+    expect(listedGap!.missed).toBe(2);
+    const [held] = store.resume().added;
+    expect(held).not.toBe(listedGap);
+    expect(held).toMatchObject({ kind: "gap", reason: "missed", missed: 4 });
   });
 
   it("closes a gap listed before the pause in place", () => {

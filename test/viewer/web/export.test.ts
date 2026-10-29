@@ -3,11 +3,14 @@ import {
   EMPTY_FILTER,
   exportFilename,
   filterPredicate,
-  toJsonl,
+  jsonlLines,
   TraceStore,
 } from "../../../web/viewer/model";
 import { schemaErrors, rawFidelityErrors, type SpecRecord } from "../../trace/conformance";
 import { callDoc, frameDoc, responseDoc, withStatuses } from "./fixtures";
+
+/** The export as one string. */
+const toJsonl = (...args: Parameters<typeof jsonlLines>) => jsonlLines(...args).join("");
 
 function storeWith() {
   const store = new TraceStore(100);

@@ -5,6 +5,7 @@
  */
 
 import {
+  type AddResult,
   capturedOf,
   type ConnectionState,
   type DeliveryStatus,
@@ -16,6 +17,7 @@ import {
   formatClock,
   type GapEntry,
   isFilterActive,
+  jsonlLines,
   listedEntries,
   membershipChanges,
   NONE,
@@ -24,7 +26,6 @@ import {
   shortId,
   sourceLabel,
   type StreamEvent,
-  toJsonl,
   type TraceEntry,
   TraceStore,
   type WireTraceDocument,
@@ -97,18 +98,21 @@ const filterUi = {
 
 const store = new TraceStore(DEFAULT_CAPACITY);
 const rows = new Map<number, HTMLTableRowElement>();
-/** Keys of the rows showing a message (the others show gap markers). */
-const messageRows = new Set<number>();
+/** The message of each row showing one (the others show gap markers), by key. */
+const messageRows = new Map<number, TraceEntry>();
+/** The delivery status each message row shows, so an unchanged one is not drawn again. */
+const shownDelivery = new WeakMap<HTMLTableRowElement, string>();
 let selected: TraceEntry | undefined;
 /** The selected message's Deliveries section, refreshed on its own. */
 let detailDeliveries: HTMLElement | undefined;
 
 let filter: FilterState = { ...EMPTY_FILTER };
+/** Which entries are listed: those the filters let through, gap markers always. */
 let visible = filterPredicate(filter);
 
-/** Which entries are listed: those the filters let through, gap markers always. */
-function isVisible(entry: Entry): boolean {
-  return visible(entry);
+function deselect(): void {
+  selected = undefined;
+  showNoSelection();
 }
 
 // --- Batched rendering: one DOM update per animation frame ---
@@ -130,17 +134,18 @@ function evicted(entries: readonly Entry[]): void {
   for (const entry of entries) {
     refilter.delete(entry.key);
     // A selected message hidden by the filters has no row whose removal would clear it.
-    if (entry === selected && !rows.has(entry.key)) {
-      selected = undefined;
-      showNoSelection();
-    }
+    if (entry === selected && !rows.has(entry.key)) deselect();
   }
+}
+
+function register(entry: Entry, row: HTMLTableRowElement): void {
+  rows.set(entry.key, row);
+  if (entry.kind === "trace") messageRows.set(entry.key, entry);
 }
 
 function addRow(entry: Entry, before?: Node | null): HTMLTableRowElement {
   const row = rowFor(entry);
-  rows.set(entry.key, row);
-  if (entry.kind === "trace") messageRows.add(entry.key);
+  register(entry, row);
   if (before !== undefined) ui.rows.insertBefore(row, before);
   return row;
 }
@@ -163,26 +168,22 @@ function rebuild(): void {
   messageRows.clear();
   const fragment = document.createDocumentFragment();
   for (const entry of store.entries()) {
-    if (!isVisible(entry)) continue;
+    if (!visible(entry)) continue;
     const row = built.get(entry.key);
     if (!row) {
       fragment.append(addRow(entry));
       continue;
     }
-    rows.set(entry.key, row);
-    if (entry.kind === "trace") messageRows.add(entry.key);
+    register(entry, row);
     fragment.append(row);
   }
   for (const entry of changed) {
     const row = built.get(entry.key);
-    if (row && rows.has(entry.key)) fillRow(row, entry);
+    if (row && rows.has(entry.key)) refreshRow(row, entry);
   }
   ui.rows.replaceChildren(fragment);
   // A selected message evicted in the same frame: its removal was not drawn.
-  if (selected && store.get(selected.doc.id) !== selected) {
-    selected = undefined;
-    showNoSelection();
-  }
+  if (selected && store.get(selected.doc.id) !== selected) deselect();
 }
 
 /**
@@ -197,8 +198,7 @@ function applyRefilter(): void {
     store.entries(),
     isListed,
     refilter.values(),
-    isVisible,
-    store.paused,
+    visible,
   );
   refilter.clear();
   for (const key of remove) removeRow(key);
@@ -219,19 +219,16 @@ function flush(): void {
     const batch = pending.take();
     for (const key of batch.removed) {
       removeRow(key);
-      if (selected?.key === key) {
-        selected = undefined;
-        showNoSelection();
-      }
+      if (selected?.key === key) deselect();
     }
     const fragment = document.createDocumentFragment();
     for (const entry of batch.added) {
-      if (isVisible(entry)) fragment.append(addRow(entry));
+      if (visible(entry)) fragment.append(addRow(entry));
     }
     ui.rows.append(fragment);
     for (const entry of batch.changed) {
       const row = rows.get(entry.key);
-      if (row) fillRow(row, entry);
+      if (row) refreshRow(row, entry);
     }
     applyRefilter();
   }
@@ -272,6 +269,7 @@ function showCounters(): void {
 
 /** A tenant option's value for messages without a tenant: never a tenant id (a DNS label). */
 const NO_TENANT = "(none)";
+const NO_TENANT_LABEL = "No tenant";
 
 function readFilter(): FilterState {
   const tenant = filterUi.tenant.value;
@@ -319,86 +317,100 @@ function resetFilters(): void {
 
 let optionsVersion = -1;
 
-/** Each control offering observed values, with how its options are refilled. */
-const optionLists = new Map<HTMLElement, (observed: ObservedValues) => void>([
+/** A control offering one kind of observed values, and how its options are refilled. */
+interface OptionList<K extends keyof ObservedValues = keyof ObservedValues> {
+  kind: K;
+  fill(values: ObservedValues[K]): void;
+}
+
+const optionList = <K extends keyof ObservedValues>(
+  kind: K,
+  fill: (values: ObservedValues[K]) => void,
+): OptionList => ({ kind, fill }) as OptionList;
+
+const optionLists = new Map<HTMLElement, OptionList>([
   [
     filterUi.tenant,
-    (observed) =>
+    optionList("tenants", (tenants) =>
       fillSelect(
         filterUi.tenant,
-        observed.tenants.map((t) => (t === null ? [NO_TENANT, "No tenant"] : [t, t])),
+        tenants.map((t) => (t === null ? [NO_TENANT, NO_TENANT_LABEL] : [t, t])),
       ),
+    ),
   ],
   [
     filterUi.action,
-    (observed) =>
+    optionList("actions", (actions) =>
       fillSelect(
         filterUi.action,
-        observed.actions.map((a) => [a, a]),
+        actions.map((a) => [a, a]),
       ),
+    ),
   ],
   [
     filterUi.source,
-    (observed) =>
+    optionList("sources", (sources) =>
       fillSelect(
         filterUi.source,
-        observed.sources.map((s) => [s, s]),
+        sources.map((s) => [s, s]),
       ),
+    ),
   ],
   [
     filterUi.chargePointId,
-    (observed) =>
-      filterUi.chargePointOptions.replaceChildren(
-        ...observed.chargePointIds.map((id) => {
-          const option = el("option");
-          option.value = id;
-          return option;
-        }),
-      ),
+    optionList("chargePointIds", (ids) =>
+      filterUi.chargePointOptions.replaceChildren(...ids.map((id) => option(id))),
+    ),
   ],
 ]);
+/** The `observedVersionOf` each control's options were filled from. */
+const filledVersions = new Map<HTMLElement, number>();
 /** Controls skipped while focused: refreshed when they lose the focus. */
 const staleOptions = new Set<HTMLElement>();
 
+function refill(control: HTMLElement, { kind, fill }: OptionList): void {
+  staleOptions.delete(control);
+  filledVersions.set(control, store.observedVersionOf(kind));
+  fill(store.observedValues(kind));
+}
+
 /**
- * The option lists, from the buffered messages' values, refreshed only when
- * those change and never under the focus (an open list, typing in the charge
- * point field). A selected value no longer observed stays selectable.
+ * The option lists, from the buffered messages' values, each refreshed only
+ * when its values change and never under the focus (an open list, typing in
+ * the charge point field). A selected value no longer observed stays
+ * selectable.
  */
 function refreshOptions(): void {
   if (store.observedVersion === optionsVersion) return;
   optionsVersion = store.observedVersion;
-  const observed = store.observed();
-  for (const [control, fill] of optionLists) {
-    if (control === document.activeElement) {
-      staleOptions.add(control);
-      continue;
-    }
-    staleOptions.delete(control);
-    fill(observed);
+  for (const [control, list] of optionLists) {
+    if (filledVersions.get(control) === store.observedVersionOf(list.kind)) continue;
+    if (control === document.activeElement) staleOptions.add(control);
+    else refill(control, list);
   }
 }
 
-for (const [control, fill] of optionLists) {
+for (const [control, list] of optionLists) {
   control.addEventListener("blur", () => {
-    if (staleOptions.delete(control)) fill(store.observed());
+    if (staleOptions.has(control)) refill(control, list);
   });
+}
+
+/** An `<option>`; without a label, the browser shows its value (a datalist suggestion). */
+function option(value: string, label?: string): HTMLOptionElement {
+  const element = label === undefined ? el("option") : el("option", undefined, label);
+  element.value = value;
+  return element;
 }
 
 function fillSelect(select: HTMLSelectElement, options: [value: string, label: string][]): void {
   const current = select.value;
   if (current !== "" && !options.some(([value]) => value === current)) {
-    options.push([current, current === NO_TENANT ? "No tenant" : current]);
+    options.push([current, current === NO_TENANT ? NO_TENANT_LABEL : current]);
   }
-  const any = el("option", undefined, "Any");
-  any.value = "";
   select.replaceChildren(
-    any,
-    ...options.map(([value, label]) => {
-      const option = el("option", undefined, label);
-      option.value = value;
-      return option;
-    }),
+    option("", "Any"),
+    ...options.map(([value, label]) => option(value, label)),
   );
   select.value = current;
 }
@@ -425,8 +437,7 @@ function togglePause(): void {
 /** Empties this page's list and held messages: the gateway and its archive are untouched. */
 function clearList(): void {
   store.clear();
-  selected = undefined;
-  showNoSelection();
+  deselect();
   rebuildDue = true;
   ui.actionStatus.textContent = "List cleared; the gateway and its archive are not affected.";
   schedule();
@@ -453,7 +464,7 @@ function exportJsonl(kind: "trace" | "frame", entries: readonly Entry[], what: s
     ui.actionStatus.textContent = "Export cancelled.";
     return;
   }
-  const blob = new Blob([toJsonl(entries, kind)], { type: "application/x-ndjson" });
+  const blob = new Blob(jsonlLines(entries, kind), { type: "application/x-ndjson" });
   const url = URL.createObjectURL(blob);
   const link = el("a");
   link.href = url;
@@ -482,18 +493,45 @@ byId("export-frames").addEventListener("click", () =>
 function rowFor(entry: Entry): HTMLTableRowElement {
   const row = el("tr");
   row.dataset.key = String(entry.key);
-  if (entry.kind === "trace") {
-    row.tabIndex = 0;
-    row.addEventListener("click", () => select(entry));
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        select(entry);
-      }
-    });
-  }
+  if (entry.kind === "trace") row.tabIndex = 0;
   fillRow(row, entry);
   return row;
+}
+
+/** The message of the row an event happened in; none for a gap marker's row. */
+function messageOf(event: Event): TraceEntry | undefined {
+  const row = event.target instanceof Element ? event.target.closest("tr") : null;
+  if (row?.parentElement !== ui.rows) return undefined;
+  return messageRows.get(Number(row.dataset.key));
+}
+
+// One listener for every row: selecting by click, Enter or Space.
+ui.rows.addEventListener("click", (event) => {
+  const entry = messageOf(event);
+  if (entry) select(entry);
+});
+ui.rows.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const entry = messageOf(event);
+  if (!entry) return;
+  event.preventDefault();
+  select(entry);
+});
+
+/** The index of a message row's delivery cell (see `fillRow`). */
+const DELIVERY_CELL = 6;
+
+/**
+ * Draws a changed entry again. A message only changes by its deliveries: its
+ * row is left alone when the status it shows is the same, otherwise only the
+ * status cell is replaced.
+ */
+function refreshRow(row: HTMLTableRowElement, entry: Entry): void {
+  if (entry.kind === "gap") return fillRow(row, entry);
+  const status = entry.summary.delivery;
+  if (shownDelivery.get(row) === status) return;
+  shownDelivery.set(row, status);
+  row.cells[DELIVERY_CELL].replaceChildren(statusPill(status));
 }
 
 function fillRow(row: HTMLTableRowElement, entry: Entry): void {
@@ -543,6 +581,7 @@ function fillRow(row: HTMLTableRowElement, entry: Entry): void {
     ),
     el("td", "delivery", statusPill(s.delivery)),
   );
+  shownDelivery.set(row, s.delivery);
 }
 
 function statusPill(status: DeliveryStatus | typeof NONE): HTMLElement {
@@ -806,7 +845,7 @@ const iso = (ms: number) => new Date(ms).toISOString();
 /** A received message enters the page here; paused, the store holds it unlisted. */
 function ingest(doc: WireTraceDocument): void {
   const { added, evicted: out } = store.addTrace(doc);
-  if (!store.paused) pending.add(added);
+  if (added) pending.add(added);
   evicted(out);
   schedule();
 }
@@ -835,8 +874,8 @@ function onEvent(event: StreamEvent): void {
 }
 
 /** Paused, the store holds a new gap marker in place among the held messages. */
-function addGap({ added, evicted: out }: { added: GapEntry; evicted: Entry[] }): void {
-  if (!store.paused) pending.upsert(added);
+function addGap({ added, evicted: out }: AddResult<GapEntry>): void {
+  if (added) pending.upsert(added);
   evicted(out);
   schedule();
 }

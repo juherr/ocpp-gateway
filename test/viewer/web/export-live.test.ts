@@ -8,13 +8,16 @@ import {
   type ConnectionState,
   EMPTY_FILTER,
   filterPredicate,
-  toJsonl,
+  jsonlLines,
   TraceStore,
 } from "../../../web/viewer/model";
 import { SseParser } from "../../../web/viewer/sse";
 import { startLiveStream } from "../../../web/viewer/stream";
 import { boot, connectWhenOpen, makeCsms, startGateway, waitFor } from "../../helpers";
 import { rawFidelityErrors, schemaErrors, type SpecRecord } from "../../trace/conformance";
+
+/** The export as one string. */
+const toJsonl = (...args: Parameters<typeof jsonlLines>) => jsonlLines(...args).join("");
 
 /**
  * The page's export against a real gateway and viewer: every exported line is
