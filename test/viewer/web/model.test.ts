@@ -5,6 +5,7 @@ import {
   ConnectionMachine,
   decodeEvent,
   formatClock,
+  RenderQueue,
   responseFailure,
   STABLE_CONNECTION_MS,
   summarize,
@@ -512,5 +513,81 @@ describe("decodeEvent", () => {
     expect(decodeEvent({ event: "trace", data: `{"id":"x","kind":"other"}` })).toBeNull();
     expect(decodeEvent({ event: "gap", data: `{"dropped":"many"}` })).toBeNull();
     expect(decodeEvent({ event: "delivery", data: `{"id":"x","index":"0"}` })).toBeNull();
+  });
+});
+
+describe("TraceStore capacity", () => {
+  it("ignores a capacity that is not a finite number", () => {
+    const store = new TraceStore(2);
+    expect(store.setCapacity(Number.NaN)).toEqual([]);
+    expect(store.setCapacity(undefined as unknown as number)).toEqual([]);
+    for (let i = 0; i < 3; i++) store.addTrace(callDoc());
+    expect(store.entries()).toHaveLength(2);
+  });
+});
+
+describe("RenderQueue", () => {
+  it("only keeps what survived until the next render, however long it waits", () => {
+    const rendered = new Set<number>();
+    const queue = new RenderQueue((key) => rendered.has(key));
+    const store = new TraceStore(3);
+    for (let i = 0; i < 1000; i++) {
+      const { added, evicted } = store.addTrace(callDoc());
+      queue.add(added);
+      queue.evict(evicted);
+    }
+
+    const batch = queue.take();
+    expect(batch.added.map((e) => e.key)).toEqual(store.entries().map((e) => e.key));
+    expect(batch.removed).toEqual([]);
+    expect(batch.changed).toEqual([]);
+  });
+
+  it("removes rendered rows once, and updates rendered rows only", () => {
+    const rendered = new Set<number>();
+    const queue = new RenderQueue((key) => rendered.has(key));
+    const store = new TraceStore(2);
+    const first = store.addTrace(callDoc()).added;
+    const second = store.addTrace(callDoc()).added;
+    queue.add(first);
+    queue.add(second);
+    for (const entry of queue.take().added) rendered.add(entry.key);
+
+    queue.change(second);
+    queue.change(second);
+    const third = store.addTrace(callDoc());
+    queue.add(third.added);
+    queue.change(third.added);
+    queue.evict(third.evicted);
+
+    expect(queue.take()).toEqual({
+      added: [third.added],
+      changed: [second],
+      removed: [first.key],
+    });
+    expect(queue.take()).toEqual({ added: [], changed: [], removed: [] });
+  });
+
+  it("drops a pending update of an entry evicted before the render", () => {
+    const queue = new RenderQueue(() => true);
+    const store = new TraceStore(1);
+    const first = store.addTrace(callDoc()).added;
+    queue.change(first);
+    const next = store.addTrace(callDoc());
+    queue.evict(next.evicted);
+    expect(queue.take()).toEqual({ added: [], changed: [], removed: [first.key] });
+  });
+
+  it("upserts a gap: a change once rendered, an addition before", () => {
+    const rendered = new Set<number>();
+    const queue = new RenderQueue((key) => rendered.has(key));
+    const store = new TraceStore(5);
+    const { added: gap } = store.addGap({ reason: "missed", at: T0, missed: 1 });
+    queue.upsert(gap);
+    queue.upsert(gap);
+    expect(queue.take()).toEqual({ added: [gap], changed: [], removed: [] });
+    rendered.add(gap.key);
+    queue.upsert(gap);
+    expect(queue.take()).toEqual({ added: [], changed: [gap], removed: [] });
   });
 });

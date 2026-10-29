@@ -12,6 +12,7 @@ import {
   formatClock,
   type GapEntry,
   NONE,
+  RenderQueue,
   sourceLabel,
   type StreamEvent,
   type TraceEntry,
@@ -74,7 +75,7 @@ function isVisible(_entry: Entry): boolean {
 
 // --- Batched rendering: one DOM update per animation frame ---
 
-const pending = { added: [] as Entry[], changed: new Set<Entry>(), removed: new Set<number>() };
+const pending = new RenderQueue((key) => rows.has(key));
 let frame: number | undefined;
 let detailDirty = false;
 
@@ -83,39 +84,37 @@ function schedule(): void {
 }
 
 function evicted(entries: readonly Entry[]): void {
-  for (const entry of entries) pending.removed.add(entry.key);
+  pending.evict(entries);
 }
 
 function flush(): void {
   frame = undefined;
-  for (const key of pending.removed) {
+  const batch = pending.take();
+  for (const key of batch.removed) {
     rows.get(key)?.remove();
     rows.delete(key);
-  }
-  if (selected && pending.removed.has(selected.key)) {
-    selected = undefined;
-    showNoSelection();
+    if (selected?.key === key) {
+      selected = undefined;
+      showNoSelection();
+    }
   }
   const atBottom = ui.scroll.scrollTop + ui.scroll.clientHeight >= ui.scroll.scrollHeight - 4;
   const fragment = document.createDocumentFragment();
-  for (const entry of pending.added) {
-    if (pending.removed.has(entry.key) || !isVisible(entry)) continue;
+  for (const entry of batch.added) {
+    if (!isVisible(entry)) continue;
     const row = rowFor(entry);
     rows.set(entry.key, row);
     fragment.append(row);
   }
   ui.rows.append(fragment);
-  for (const entry of pending.changed) {
+  for (const entry of batch.changed) {
     const row = rows.get(entry.key);
-    if (row && !pending.removed.has(entry.key)) fillRow(row, entry);
+    if (row) fillRow(row, entry);
   }
   if (atBottom) ui.scroll.scrollTop = ui.scroll.scrollHeight;
 
   if (detailDirty && selected) renderDetail(selected);
   detailDirty = false;
-  pending.added = [];
-  pending.changed.clear();
-  pending.removed.clear();
 
   ui.received.textContent = store.received.toLocaleString("en");
   ui.sessions.textContent = store.sessions.toLocaleString("en");
@@ -398,7 +397,7 @@ const iso = (ms: number) => new Date(ms).toISOString();
 /** A received message enters the page here: pausing plugs in. */
 function ingest(doc: WireTraceDocument): void {
   const { added, evicted: out } = store.addTrace(doc);
-  pending.added.push(added);
+  pending.add(added);
   evicted(out);
   schedule();
 }
@@ -414,7 +413,7 @@ function onEvent(event: StreamEvent): void {
     case "delivery": {
       const entry = store.applyDelivery(event.update);
       if (!entry) return;
-      pending.changed.add(entry);
+      pending.change(entry);
       if (entry === selected) detailDirty = true;
       break;
     }
@@ -426,8 +425,7 @@ function onEvent(event: StreamEvent): void {
 }
 
 function addGap({ added, evicted: out }: { added: GapEntry; evicted: Entry[] }): void {
-  if (rows.has(added.key)) pending.changed.add(added);
-  else if (!pending.added.includes(added)) pending.added.push(added);
+  pending.upsert(added);
   evicted(out);
   schedule();
 }

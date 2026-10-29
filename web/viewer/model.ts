@@ -323,8 +323,9 @@ export class TraceStore {
     return this.byId.get(id);
   }
 
-  /** Changes the capacity (at least 1); returns the entries evicted. */
+  /** Changes the capacity (at least 1; ignored unless finite); returns the entries evicted. */
   setCapacity(capacity: number): Entry[] {
+    if (typeof capacity !== "number" || !Number.isFinite(capacity)) return [];
     this.capacity = Math.max(1, Math.floor(capacity));
     return this.trim();
   }
@@ -432,6 +433,71 @@ export class TraceStore {
     if (this.head === 0) return;
     this.items = this.items.slice(this.head);
     this.head = 0;
+  }
+}
+
+// --- What the next render must do ---
+
+export interface RenderBatch {
+  /** Entries without a row yet, in reception order. */
+  added: Entry[];
+  /** Rendered entries whose row must be refreshed. */
+  changed: Entry[];
+  /** Keys of rendered rows to remove. */
+  removed: number[];
+}
+
+/**
+ * The DOM changes waiting for the next animation frame. Browsers pause
+ * animation frames in background tabs, so it stays bounded by the store's
+ * capacity however long that lasts: an entry evicted before being rendered is
+ * forgotten, and only rendered rows are queued for removal.
+ */
+export class RenderQueue {
+  private added = new Map<number, Entry>();
+  private changed = new Map<number, Entry>();
+  private removed = new Set<number>();
+
+  /** `rendered(key)`: the entry has a row on the page. */
+  constructor(private readonly rendered: (key: number) => boolean) {}
+
+  add(entry: Entry): void {
+    this.added.set(entry.key, entry);
+  }
+
+  /** An entry changed; one not rendered yet will be drawn in its latest state anyway. */
+  change(entry: Entry): void {
+    if (this.rendered(entry.key)) this.changed.set(entry.key, entry);
+  }
+
+  /** A gap marker that may have been merged into one already shown. */
+  upsert(entry: Entry): void {
+    if (this.rendered(entry.key)) this.changed.set(entry.key, entry);
+    else this.added.set(entry.key, entry);
+  }
+
+  evict(entries: readonly Entry[]): void {
+    for (const { key } of entries) {
+      this.added.delete(key);
+      this.changed.delete(key);
+      if (this.rendered(key)) this.removed.add(key);
+    }
+  }
+
+  get empty(): boolean {
+    return this.added.size === 0 && this.changed.size === 0 && this.removed.size === 0;
+  }
+
+  take(): RenderBatch {
+    const batch = {
+      added: [...this.added.values()],
+      changed: [...this.changed.values()],
+      removed: [...this.removed],
+    };
+    this.added = new Map();
+    this.changed = new Map();
+    this.removed = new Set();
+    return batch;
   }
 }
 
