@@ -19,6 +19,18 @@ jobs:
     services:
       mongo:
         image: mongo:8.0
+        # MongoDB 8.0 refuses to start on Linux 6.19 to 7.0.13 while tcmalloc
+        # uses its per-CPU caches, which rely on rseq (SERVER-121912; check in
+        # src/mongo/db/startup_check_rseq.cpp, SERVER-122576). The image sets
+        # glibc.pthread.rseq=0 to give rseq to tcmalloc; rseq=1 lets glibc
+        # register it first, so tcmalloc falls back to per-thread caches
+        # (slower, fine for tests) and the check passes. Newer kernels are
+        # exempt (SERVER-125742, Ubuntu's 7.0.0-NN from 8.0.37: SERVER-131779,
+        # SERVER-136848), but some runners still boot an affected kernel.
+        # mongo:7.0 is not an option: it rejects a TTL index on a capped
+        # collection, which the capped-collection tests need.
+        env:
+          GLIBC_TUNABLES: glibc.pthread.rseq=1
         ports:
           - 27017:27017
         options: >-
@@ -29,6 +41,11 @@ jobs:
     env:
       TRACE_TEST_MONGODB_URI: mongodb://127.0.0.1:27017
     steps:
+      # The kernel varies between hosted VMs and decides whether the MongoDB
+      # rseq startup check applies (see the mongo service above).
+      - name: Runner kernel
+        run: uname -r
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       # Installs Node from mise.toml (single source of truth for the version).
