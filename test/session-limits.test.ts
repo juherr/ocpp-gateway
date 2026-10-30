@@ -494,9 +494,15 @@ describe("a refused connection is not kept around", () => {
     return gw;
   }
 
-  /** Resolve true if `socket` is closed within `ms`. */
+  /**
+   * Resolve true if `socket` is closed within `ms`. A reset counts as a close: the socket's
+   * no-op `error` listener swallows the ECONNRESET, where `events.once` would reject on it.
+   */
   const closedWithin = (socket: Socket, ms: number) =>
-    Promise.race([once(socket, "close").then(() => true), sleep(ms).then(() => false)]);
+    Promise.race([
+      new Promise<boolean>((resolve) => socket.once("close", () => resolve(true))),
+      sleep(ms).then(() => false),
+    ]);
 
   it.each([
     { description: "over a limit", path: "/CP-001" },
