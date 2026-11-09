@@ -1,6 +1,6 @@
 # ocpp-gateway on Cloudflare (Worker + Container)
 
-A minimal, working example of running the **unchanged** ocpp-gateway image in a [Cloudflare Container](https://developers.cloudflare.com/containers/), with tenants resolved from the hostname:
+A minimal, working example of running the **unchanged** ocpp-gateway bundle and runtime image in a [Cloudflare Container](https://developers.cloudflare.com/containers/), with tenants resolved from the hostname:
 
 ```text
 Charge Point
@@ -9,7 +9,7 @@ Charge Point
 Cloudflare Worker      strips forged internal headers, sets x-forwarded-host
     │                  = the hostname Cloudflare routed (tenant-a.ocpp.example.com)
     ▼
-Cloudflare Container   node dist/index.cjs (the repository's Dockerfile)
+Cloudflare Container   node dist/index.cjs (the repository's runtime image)
     │                  TENANT_HOST_HEADER=x-forwarded-host → tenant-a
     ▼                  routes.json → tenants["tenant-a"] → CP-001
 CSMS A
@@ -21,18 +21,22 @@ The Worker holds no OCPP or tenant logic: the gateway resolves the tenant (see [
 | --------------------- | ------------------------------------------------------------------------------------------------------- |
 | `src/forward.ts`      | The Worker → Container trust boundary (header stripping/injection). No `cloudflare:*` import; unit-tested |
 | `src/index.ts`        | The Worker entrypoint and the `OcppGateway` Container class                                              |
-| `wrangler.jsonc`      | Route, variables, container image (`../../Dockerfile`) and Durable Object binding                        |
+| `wrangler.jsonc`      | Route, variables, container image (`Dockerfile`) and Durable Object binding                              |
+| `Dockerfile`          | The root Dockerfile's runtime stage around the `dist/` built on the host (see below)                     |
 | `test/forward.test.ts`| Boundary tests, run by the root `npm test`                                                              |
 | `test/smoke.test.ts`  | End-to-end test against `npm run dev` (skipped by `npm test`), see [Smoke test](#smoke-test)            |
 
-CI (`cloudflare` job in `.github/workflows/docker.yml`) runs `npm ci`, `npm run typecheck` (the Worker against the Workers/Containers types) and `npm run dry-run` (validates `wrangler.jsonc`, bundles the Worker and builds the container image — no Cloudflare credentials, nothing deployed). The `cloudflare-smoke` job then runs the [smoke test](#smoke-test) against `npm run dev` on the runner.
+`wrangler` cannot pass a build secret to `docker build`, and the root Dockerfile's build stage needs one (`GITHUB_TOKEN`, to install the Open OCPP Trace SDK from GitHub Packages, see [From source](../../README.md#from-source)). So the gateway is bundled on the host instead: `npm run dev`, `npm run dry-run` and `npm run deploy` first run the root `npm run build` (their `pre*` scripts), and `Dockerfile` copies that `dist/` into the same runtime stage as the root Dockerfile. Keep the two runtime stages in sync.
+
+CI (`cloudflare` job in `.github/workflows/docker.yml`) runs the root `npm ci`, then `npm ci`, `npm run typecheck` (the Worker against the Workers/Containers types) and `npm run dry-run` (validates `wrangler.jsonc`, bundles the Worker and builds the container image — no Cloudflare credentials, nothing deployed). The `cloudflare-smoke` job then runs the [smoke test](#smoke-test) against `npm run dev` on the runner.
 
 ## Prerequisites
 
 - A Cloudflare account on the **Workers Paid** plan: Containers are not available on the Free plan. One always-on `basic` instance (1/4 vCPU, 1 GiB, 4 GB disk) plus its Durable Object, which never hibernates while a charger is connected, costs roughly $12–25/month at [current prices](https://developers.cloudflare.com/containers/platform/pricing/), on top of the $5 plan.
 - A zone on Cloudflare (here `example.com`) with a **proxied wildcard DNS record** `*.ocpp` (e.g. `AAAA *.ocpp 100::`). Workers [Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) cannot be wildcards, hence the route.
 - An **edge certificate covering `*.ocpp.example.com`**: Universal SSL only covers first-level subdomains (`*.example.com`), so use Advanced Certificate Manager / Total TLS, or put tenants directly under the zone (`*.example.com`).
-- Docker (or a compatible engine) running locally: `wrangler` builds the image from the repository's `Dockerfile` (`linux/amd64`).
+- Docker (or a compatible engine) running locally: `wrangler` builds the image from `Dockerfile` (`linux/amd64`).
+- The gateway's dependencies installed at the repository root (`npm ci` with `GITHUB_TOKEN` set to a token with `read:packages`), for the `dist/` the image copies.
 - Node 24 (see the repository's `mise.toml`).
 
 ## Configuration

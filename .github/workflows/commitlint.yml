@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# npm ci reads the Open OCPP Trace SDK from GitHub Packages (see .npmrc).
+permissions:
+  contents: read
+  packages: read
+
 jobs:
   commitlint:
     runs-on: ubuntu-latest
@@ -18,6 +23,8 @@ jobs:
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
 
       - run: npm ci
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Validate every commit in a PR against the Conventional Commits rules.
       - name: Lint PR commits

@@ -1,10 +1,12 @@
 # The Dockerfile copies an explicit list of build inputs; this keeps the rest
-# (VCS data, dependencies, build output, local secrets and scratch files) out
-# of the build context sent to Docker, for Compose and the Cloudflare
-# container build (deploy/cloudflare, context "../..") alike.
+# (VCS data, dependencies, local secrets and scratch files) out of the build
+# context sent to Docker, for Compose and the Cloudflare container build
+# (deploy/cloudflare, context "../..") alike. dist/ stays in: the Cloudflare
+# image copies the bundle built on the host (wrangler pipes its Dockerfile
+# through stdin, so a Dockerfile-specific ignore file would not apply), and the
+# root Dockerfile never copies it, building its own.
 .git
 **/node_modules
-dist
 coverage
 .context
 .codegraph

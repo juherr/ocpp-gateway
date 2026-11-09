@@ -1,7 +1,16 @@
 version: 2
+registries:
+  # The Open OCPP Trace SDK (@open-ocpp-trace/*, see .npmrc): GitHub Packages
+  # needs a token with read:packages even for a public package.
+  github-packages:
+    type: npm-registry
+    url: https://npm.pkg.github.com
+    token: ${{ secrets.DEPENDABOT_PACKAGES_TOKEN }}
 updates:
   - package-ecosystem: npm
     directory: "/"
+    registries:
+      - github-packages
     schedule:
       interval: weekly
     groups:
@@ -32,6 +41,10 @@ updates:
           - "*"
 
   - package-ecosystem: docker
-    directory: "/"
+    # The Cloudflare example's Dockerfile repeats the root runtime stage: keep
+    # their base images in step.
+    directories:
+      - "/"
+      - "/deploy/cloudflare"
     schedule:
       interval: weekly

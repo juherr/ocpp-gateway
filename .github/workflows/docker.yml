@@ -7,6 +7,12 @@ on:
   pull_request:
     branches: [main]
 
+# npm ci reads the Open OCPP Trace SDK from GitHub Packages (see .npmrc),
+# which needs a token even for a public package.
+permissions:
+  contents: read
+  packages: read
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
@@ -52,6 +58,8 @@ jobs:
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
 
       - run: npm ci
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - run: npm run lint
 
@@ -65,8 +73,8 @@ jobs:
   # config), outside the root gates above. Its runtime-agnostic forward.ts is
   # already tested by `npm test`; this checks the Worker entrypoint against the
   # Workers/Containers types and validates wrangler.jsonc. The dry run also
-  # builds the container image from the root Dockerfile (no Cloudflare
-  # credentials needed, nothing is deployed).
+  # builds the gateway bundle (root dependencies needed) and the container
+  # image around it (no Cloudflare credentials needed, nothing is deployed).
   cloudflare:
     runs-on: ubuntu-latest
     defaults:
@@ -78,6 +86,12 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+
+      # The gateway's dependencies, for the bundle `predry-run` builds.
+      - run: npm ci
+        working-directory: .
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - run: npm ci
 
@@ -100,6 +114,8 @@ jobs:
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
 
       - run: npm ci
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - run: npm ci
         working-directory: deploy/cloudflare
@@ -122,6 +138,8 @@ jobs:
 
       - name: Verify Compose deployment contract
         run: bash test/compose-smoke.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Worker and gateway logs
         if: always()
@@ -172,3 +190,6 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # For the build stage's npm ci (see Dockerfile).
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
