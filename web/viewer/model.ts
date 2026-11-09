@@ -16,6 +16,7 @@ import {
   type TraceSource,
   type UnparsedFrame,
 } from "../../src/trace/record";
+import { JsonlWriteError, serializeRecord } from "@open-ocpp-trace/jsonl/writer";
 import { isPlainObject } from "../../src/utils/objects";
 import type { SseEvent } from "./sse";
 
@@ -843,23 +844,41 @@ export function listedEntries(
 
 // --- Export ---
 
+/** An export's lines, and the trace records left out of it. */
+export interface JsonlExport {
+  /** One part per line, newline included: a `Blob` joins them without building one large string. */
+  lines: string[];
+  /** Trace records that are not valid Open OCPP Trace, so not written. */
+  skipped: number;
+}
+
 /**
  * JSON Lines of the given entries' trace records (`trace`: Open OCPP Trace
  * v1.1, exactly as streamed, gateway metadata included, delivery outcomes
  * not: they are not part of the record) or unparsed frames (`frame`), one per
- * line in list order. Gap markers and the other kind are left out; nothing is
- * modified. One part per line, newline included: a `Blob` joins them without
- * building one large string.
+ * line in list order. Trace records go through the Open OCPP Trace JSONL
+ * writer, which validates them: an invalid one is skipped and counted rather
+ * than abort the export. Gap markers and the other kind are left out; nothing
+ * is modified.
  */
-export function jsonlLines(entries: readonly Entry[], kind: "trace" | "frame"): string[] {
+export function jsonlLines(entries: readonly Entry[], kind: "trace" | "frame"): JsonlExport {
   const lines: string[] = [];
+  let skipped = 0;
   for (const entry of entries) {
     if (entry.kind !== "trace") continue;
     const { doc } = entry;
-    if (kind === "trace" && doc.kind === "trace") lines.push(`${JSON.stringify(doc.trace)}\n`);
-    else if (kind === "frame" && doc.kind === "frame") lines.push(`${JSON.stringify(doc.frame)}\n`);
+    if (kind === "trace" && doc.kind === "trace") {
+      try {
+        lines.push(serializeRecord(doc.trace));
+      } catch (error) {
+        if (!(error instanceof JsonlWriteError)) throw error;
+        skipped += 1;
+      }
+    } else if (kind === "frame" && doc.kind === "frame") {
+      lines.push(`${JSON.stringify(doc.frame)}\n`);
+    }
   }
-  return lines;
+  return { lines, skipped };
 }
 
 /** `ocpp-traces-<ISO time>.jsonl` (or `ocpp-unparsed-frames-…`), colons replaced for every OS. */

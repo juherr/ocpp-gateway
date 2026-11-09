@@ -469,7 +469,13 @@ function exportJsonl(kind: "trace" | "frame", entries: readonly Entry[], what: s
     ui.actionStatus.textContent = "Export cancelled.";
     return;
   }
-  const blob = new Blob(jsonlLines(entries, kind), { type: "application/x-ndjson" });
+  const { lines, skipped } = jsonlLines(entries, kind);
+  const invalid = `${skipped.toLocaleString("en")} not valid Open OCPP Trace`;
+  if (lines.length === 0) {
+    ui.actionStatus.textContent = `Nothing exported: ${invalid}.`;
+    return;
+  }
+  const blob = new Blob(lines, { type: "application/x-ndjson" });
   const url = URL.createObjectURL(blob);
   const link = el("a");
   link.href = url;
@@ -479,7 +485,9 @@ function exportJsonl(kind: "trace" | "frame", entries: readonly Entry[], what: s
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  ui.actionStatus.textContent = `Exported ${count.toLocaleString("en")} ${what} to ${link.download}.`;
+  ui.actionStatus.textContent =
+    `Exported ${lines.length.toLocaleString("en")} ${what} to ${link.download}.` +
+    (skipped > 0 ? ` Skipped ${invalid}.` : "");
 }
 
 byId("export-filtered").addEventListener("click", () =>

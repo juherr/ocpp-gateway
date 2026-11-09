@@ -17,7 +17,7 @@ import { boot, connectWhenOpen, makeCsms, startGateway, waitFor } from "../../he
 import { rawFidelityErrors, schemaErrors, type SpecRecord } from "../../trace/conformance";
 
 /** The export as one string. */
-const toJsonl = (...args: Parameters<typeof jsonlLines>) => jsonlLines(...args).join("");
+const toJsonl = (...args: Parameters<typeof jsonlLines>) => jsonlLines(...args).lines.join("");
 
 /**
  * The page's export against a real gateway and viewer: every exported line is
