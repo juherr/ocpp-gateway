@@ -40,9 +40,9 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "@sentry/node": "^11.6.0",
-    "mongodb": "^7.7.0",
-    "ws": "^8.22.0"
+    "@sentry/node": "^11.11.0",
+    "mongodb": "^7.8.0",
+    "ws": "^8.22.2"
   },
   "devDependencies": {
     "@commitlint/cli": "^21.0.2",
