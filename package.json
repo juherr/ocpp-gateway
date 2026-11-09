@@ -40,27 +40,27 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "@sentry/node": "^11.6.0",
-    "mongodb": "^7.7.0",
-    "ws": "^8.22.0"
+    "@sentry/node": "^11.11.0",
+    "mongodb": "^7.8.0",
+    "ws": "^8.22.2"
   },
   "devDependencies": {
-    "@commitlint/cli": "^21.0.2",
-    "@commitlint/config-conventional": "^21.0.2",
+    "@commitlint/cli": "^21.2.4",
+    "@commitlint/config-conventional": "^21.2.4",
     "@open-ocpp-trace/core": "^0.1.0",
     "@open-ocpp-trace/jsonl": "^0.1.0",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.6.6",
     "@types/prismjs": "^1.26.6",
     "@types/ws": "^8.18.2",
     "husky": "^9.1.7",
-    "lint-staged": "^17.0.7",
+    "lint-staged": "^17.6.0",
     "prismjs": "^1.30.0",
-    "typescript": "^5.7.0",
-    "vite-plus": "^0.2.0",
-    "vitest": "^2.1.0"
+    "typescript": "^7.0.2",
+    "vite-plus": "^1.5.1",
+    "vitest": "5.1.0"
   },
   "lint-staged": {
-    "*.{ts,js,mjs,cjs}": [
+    "*.{ts,mts,js,mjs,cjs}": [
       "vp fmt --write",
       "vp lint --fix"
     ]

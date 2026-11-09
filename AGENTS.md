@@ -12,7 +12,7 @@ This is a fork of [joulo-ocpp-proxy](https://github.com/joulo-nl/joulo-ocpp-prox
 
 The SDK is published to GitHub Packages, whose npm registry needs a token with `read:packages` even for a public package: `.npmrc` maps the `@open-ocpp-trace` scope and reads `GITHUB_TOKEN`, so set it (`export GITHUB_TOKEN=$(gh auth token)`, after a one-time `gh auth refresh -s read:packages`: gh's default scopes lack it) before `npm ci`/`npm install`. CI passes the workflow's `GITHUB_TOKEN` (`packages: read`), the Dockerfile's build stage takes it as the `github_token` build secret (`docker build --secret id=github_token,env=GITHUB_TOKEN .`, `docker-compose.yml` reads it from the environment or `.env`), and Dependabot uses the `DEPENDABOT_PACKAGES_TOKEN` secret. Running the bundle needs no token.
 
-The Node version is pinned in `mise.toml` (Node 24 LTS). With [mise](https://mise.jdx.dev) installed, run `mise install` once to get the right Node; CI and Docker use the same version.
+The Node version is pinned in `mise.toml` (Node 26 LTS). With [mise](https://mise.jdx.dev) installed, run `mise install` once to get the right Node; CI and Docker use the same version.
 
 ```bash
 npm run lint       # vp lint && vp fmt --check (Vite+: Oxlint + Oxfmt)
@@ -36,7 +36,7 @@ CI validates every PR and push to `main`:
 - `.github/workflows/commitlint.yml` — lints commit messages against Conventional Commits (the CI counterpart to the local `commit-msg` hook, which `--no-verify` can bypass).
 - `.github/workflows/docker.yml` — a `test` job (lint + typecheck + build + `npm test`, with a `mongo` service so the real-MongoDB trace tests run), a `cloudflare` job (root `npm ci`, then `deploy/cloudflare`: `npm ci`, `npm run typecheck`, `npm run dry-run` — builds the root bundle, validates `wrangler.jsonc` and builds the container image, no Cloudflare credentials needed), a `cloudflare-smoke` job (runs the Worker + gateway container under `wrangler dev` with the runner's Docker and drives them with `deploy/cloudflare/test/smoke.test.ts`), and, only if all three pass, a `build` job publishing a multi-arch image to `ghcr.io/juherr/ocpp-gateway`. Image tags are **semver-pinned** (`flavor: latest=false` — never publish `latest`).
 
-Both workflows install Node via `jdx/mise-action`, which reads the version from `mise.toml` — the single source of truth shared with local dev and the Docker images (Node 24, the current LTS). GitHub Actions are pinned to commit SHAs with a `# vX.Y.Z` comment; Dependabot (`.github/dependabot.yml`) keeps npm, actions, and Docker deps current.
+Both workflows install Node via `jdx/mise-action`, which reads the version from `mise.toml` — the single source of truth shared with local dev and the Docker images (Node 26, the current LTS). GitHub Actions are pinned to commit SHAs with a `# vX.Y.Z` comment; Dependabot (`.github/dependabot.yml`) keeps npm, actions, and Docker deps current.
 
 ## Architecture
 
@@ -125,7 +125,7 @@ Optional (`config.trace`). The invariants:
 
 - **Conventional Commits** are enforced by commitlint (`@commitlint/config-conventional`, config in `.commitlintrc.json`). Commit messages must look like `type(scope): subject` — e.g. `feat: add per-charger routing`, `fix(connection): guard secondary close`. Allowed types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
 - **Git hooks** are managed by [husky](https://typicode.github.io/husky/) (installed via the `prepare` script on `npm install`). Hook scripts live in `.husky/`:
-  - `pre-commit` → `lint-staged`: runs `vp fmt --write` then `vp lint --fix` on staged `*.{ts,js,mjs,cjs}` files and re-stages them (config under `lint-staged` in `package.json`).
+  - `pre-commit` → `lint-staged`: runs `vp fmt --write` then `vp lint --fix` on staged `*.{ts,mts,js,mjs,cjs}` files and re-stages them (config under `lint-staged` in `package.json`).
   - `commit-msg` → `commitlint`: validates the message.
   - `pre-push` → `npm test`: the full suite must pass before pushing.
 - Update **`CHANGELOG.md`** ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)) for any user-facing change: add entries under `## [Unreleased]` in the appropriate group (Added / Changed / Deprecated / Removed / Fixed / Security). On release, rename `[Unreleased]` to the new version with a date and update the comparison links at the bottom.

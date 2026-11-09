@@ -126,6 +126,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass the build secret the root Dockerfile now needs.
 - On shutdown, charger sessions are torn down immediately instead of after
   each charger's close handshake, so upstream links close sooner.
+- Runtime dependencies updated: `ws` 8.22.2, `mongodb` 7.8.0 and
+  `@sentry/node` 11.11.0.
+- The Docker image, CI and local development (`mise.toml`) run Node 26, the
+  current LTS. Node 24 remains supported (`engines`).
 
 ### Fixed
 

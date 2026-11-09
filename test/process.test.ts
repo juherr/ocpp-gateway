@@ -201,6 +201,15 @@ describe("gateway process with Sentry enabled", () => {
         const createServer = http.createServer;
         http.createServer = (...args) => {
           const server = createServer(...args);
+          // Only a request the server has started parsing keeps close()
+          // waiting: tell the test once its first bytes are read.
+          server.once("connection", (conn) => {
+            const read = setInterval(() => {
+              if (conn.bytesRead === 0) return;
+              clearInterval(read);
+              console.log(JSON.stringify({ msg: "half request read" }));
+            }, 5);
+          });
           server.once("listening", () => {
             const socket = net.connect(server.address().port, "127.0.0.1");
             socket.write("GET /healthz HTTP/1.1\\r\\nHost: x\\r\\n");
@@ -224,7 +233,7 @@ describe("gateway process with Sentry enabled", () => {
         });
       `;
       const { proc, exited, logged } = startGateway({ PORT: String(await freePort()) }, preload);
-      await logged("proxy listening");
+      await logged("half request read");
 
       proc.kill("SIGTERM");
 

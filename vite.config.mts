@@ -27,6 +27,9 @@ export default defineConfig({
       format: ["cjs"],
       sourcemap: true,
       dts: false,
+      // CommonJS on purpose: `main` is dist/index.cjs and src/index.ts finds
+      // the viewer's page through __dirname.
+      checks: { legacyCjs: false },
     },
     // The viewer's page: one browser script (dist/viewer/viewer.js) plus the
     // html and css it needs, read by the gateway at viewer startup.
@@ -43,6 +46,9 @@ export default defineConfig({
       // No map: the viewer serves no viewer.js.map.
       sourcemap: false,
       dts: false,
+      // Prism and the Open OCPP Trace SDK are the only packages the page may
+      // bundle; any other fails the build.
+      deps: { onlyBundle: ["prismjs", /^@open-ocpp-trace\//] },
       copy: ["web/viewer/index.html", "web/viewer/viewer.css"],
     },
   ],
