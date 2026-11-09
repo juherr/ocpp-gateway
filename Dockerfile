@@ -2,7 +2,7 @@
 # emits a portable JS bundle (ws stays external), so it never needs to run under
 # emulation. Building once on the native arch is faster (no QEMU for the arm64
 # image) and sidesteps Vite+'s native bundler binaries (Rolldown/Oxc) entirely.
-FROM --platform=$BUILDPLATFORM node:24 AS build
+FROM --platform=$BUILDPLATFORM node:26 AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -12,7 +12,7 @@ COPY src ./src
 COPY web ./web
 RUN npm run build
 
-FROM node:24-alpine
+FROM node:26-alpine
 WORKDIR /app
 COPY package*.json ./
 # --ignore-scripts: skip the `prepare` (husky) lifecycle script — husky is a
