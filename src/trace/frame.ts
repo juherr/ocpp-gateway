@@ -2,7 +2,7 @@ import { OCPP_MSG_CALL, OCPP_MSG_CALLERROR, OCPP_MSG_CALLRESULT } from "../types
 import { isPlainObject } from "../utils/objects";
 
 /** An OCPP-J frame decomposed into the fields of an Open OCPP Trace record. */
-type ParsedFrame =
+export type ParsedFrame =
   | { messageType: "CALL"; messageId: string; action: string; payload: unknown }
   | { messageType: "CALLRESULT"; messageId: string; payload: unknown }
   | {

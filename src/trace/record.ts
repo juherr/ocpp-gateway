@@ -1,11 +1,15 @@
+import type {
+  CallErrorRecord,
+  CallRecord,
+  CallResultRecord,
+  Direction,
+  SCHEMA_VERSION,
+} from "@open-ocpp-trace/core";
 import type { TenantId } from "../tenants";
 import type { UnparsedReason } from "./frame";
 
-/** The Open OCPP Trace format version the records conform to. */
-export const TRACE_SCHEMA_VERSION = "1.1";
-
 /** Relative to the charge point / CSMS pair, whichever socket the frame came from. */
-export type Direction = "cp-to-csms" | "csms-to-cp";
+export type { Direction };
 
 /** Who sent a frame to the gateway. Backend ids name a logical CSMS, never a URL. */
 export type TraceSource =
@@ -48,23 +52,22 @@ export interface GatewayMeta {
   binary?: true;
 }
 
-/** An Open OCPP Trace v1.1 record. */
-export interface OcppTraceRecord {
-  schemaVersion: typeof TRACE_SCHEMA_VERSION;
-  timestamp: string;
-  ocppVersion?: string;
+/** What the gateway always sets on a record, beyond what the format requires. */
+interface GatewayRecordFields {
+  schemaVersion: typeof SCHEMA_VERSION;
   transport: "json";
   chargePointId: string;
-  connectorId?: number;
-  direction: Direction;
-  messageType: "CALL" | "CALLRESULT" | "CALLERROR";
   messageId: string;
-  action?: string;
-  payload?: unknown;
   raw: string;
-  error?: { code: string; description: string; details?: unknown };
   meta: { gateway: GatewayMeta };
 }
+
+/** An Open OCPP Trace v1.1 record, as the gateway produces it. */
+export type OcppTraceRecord =
+  | (CallRecord & GatewayRecordFields)
+  | (CallResultRecord & GatewayRecordFields)
+  | (CallErrorRecord &
+      GatewayRecordFields & { error: { code: string; description: string; details?: unknown } });
 
 /**
  * A received frame that Open OCPP Trace v1.1 cannot represent (not OCPP-J,
