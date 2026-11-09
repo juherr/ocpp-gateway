@@ -23,8 +23,9 @@
   "containers": [
     {
       "class_name": "OcppGateway",
-      // The repository's own Dockerfile, unchanged.
-      "image": "../../Dockerfile",
+      // The repository's runtime stage around a dist/ built on the host
+      // (see Dockerfile): wrangler cannot pass the root build stage its secret.
+      "image": "./Dockerfile",
       "image_build_context": "../..",
       "instance_type": "basic",
       "max_instances": 1,

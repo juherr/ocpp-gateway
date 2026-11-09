@@ -1,6 +1,11 @@
 services:
   ocpp-gateway:
-    build: .
+    build:
+      context: .
+      # The build stage installs the Open OCPP Trace SDK from GitHub Packages,
+      # which needs a token with read:packages (see Dockerfile).
+      secrets:
+        - github_token
     expose:
       - "9000"
     # The application must listen on the container network for Coolify's proxy.
@@ -25,3 +30,7 @@ services:
       # Provide your routing table (see routes.example.json).
       - "${ROUTES_HOST_PATH:-./routes.json}:/app/routes.json:ro"
     restart: unless-stopped
+
+secrets:
+  github_token:
+    environment: GITHUB_TOKEN

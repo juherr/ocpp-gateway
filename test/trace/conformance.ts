@@ -1,25 +1,18 @@
 /**
  * Test-only port of the Open OCPP Trace reference consumer
  * (`conformance/validate.mjs` of open-ocpp-trace/specification, Apache-2.0):
- * schema validation, raw-frame fidelity, and the normative correlation rule;
- * plus the gateway's conversation views checked against it.
+ * schema validation (through `@open-ocpp-trace/core`, which validates as the
+ * schema does), raw-frame fidelity, and the normative correlation rule; plus
+ * the gateway's conversation views checked against it.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import Ajv2020 from "ajv/dist/2020.js";
-import addFormats from "ajv-formats";
+import { validateRecord } from "@open-ocpp-trace/core";
 import { expect } from "vitest";
 import type { OcppTraceRecord, TraceDocument } from "../../src/trace/record";
 
 export const SPEC_DIR = join(__dirname, "..", "fixtures", "open-ocpp-trace");
-
-const schema = JSON.parse(
-  readFileSync(join(SPEC_DIR, "schema", "trace-v1.schema.json"), "utf8"),
-) as object;
-const ajv = new Ajv2020({ allErrors: true });
-addFormats(ajv);
-const validateRecord = ajv.compile(schema);
 
 /** The fields of a trace record the reference consumer reads. */
 export interface SpecRecord {
@@ -36,8 +29,9 @@ export interface SpecRecord {
 
 /** Schema violations of `record`, empty when it is valid. */
 export function schemaErrors(record: unknown): string[] {
-  if (validateRecord(record)) return [];
-  return (validateRecord.errors ?? []).map((e) => `${e.instancePath} ${e.message ?? ""}`);
+  const result = validateRecord(record);
+  if (result.ok) return [];
+  return result.issues.map((issue) => `${issue.path} ${issue.code}: ${issue.message}`);
 }
 
 const MESSAGE_TYPE: Record<number, string> = { 2: "CALL", 3: "CALLRESULT", 4: "CALLERROR" };

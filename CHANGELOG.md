@@ -98,19 +98,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alike; pause and resume, with the frames received meanwhile held within
   the same bounds and counted; clear, which never affects the gateway nor
   the archive; and JSON Lines export of the filtered or all trace records,
-  exactly as streamed and Open OCPP Trace v1.1 conforming, unparsed frames
+  exactly as streamed and validated with the Open OCPP Trace SDK (a record
+  that is not valid v1.1 is left out, and the count shown), unparsed frames
   in a separate file, after a warning that the file holds raw, unmasked
   OCPP data.
 
 ### Changed
 
+- **Building from source or the Docker image now needs a GitHub token with
+  `read:packages`** in `GITHUB_TOKEN`: the gateway uses the
+  [Open OCPP Trace SDK](https://github.com/open-ocpp-trace/sdk)
+  (`@open-ocpp-trace/core`, `@open-ocpp-trace/jsonl`), published to GitHub
+  Packages, whose registry requires authentication even for public packages.
+  Pass it to `docker build` as a secret
+  (`--secret id=github_token,env=GITHUB_TOKEN`); `docker-compose.yml` (and
+  so Coolify) reads it from the environment at build time. The SDK is bundled,
+  so the published image and running the gateway need no token.
 - OCPP frames are no longer parsed for debug logging unless `LOG_LEVEL` is
   `debug`, sparing the forwarding path that work on large frames.
 - The Docker image and `npm start` run Node with `--enable-source-maps`, so
   stack traces (in logs and in Sentry) point to the TypeScript sources.
-- A `.dockerignore` keeps `.git`, `node_modules`, build output and local
-  secrets (`.env`, `routes.json`, Wrangler files) out of the Docker build
-  context, for Compose and the Cloudflare container alike.
+- A `.dockerignore` keeps `.git`, `node_modules` and local secrets (`.env`,
+  `routes.json`, Wrangler files) out of the Docker build context, for Compose
+  and the Cloudflare container alike.
+- The Cloudflare example builds its image from its own Dockerfile, the root
+  runtime stage around a `dist/` bundled on the host, since `wrangler` cannot
+  pass the build secret the root Dockerfile now needs.
 - On shutdown, charger sessions are torn down immediately instead of after
   each charger's close handshake, so upstream links close sooner.
 

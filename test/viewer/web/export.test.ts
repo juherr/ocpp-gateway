@@ -1,3 +1,4 @@
+import { readRecords } from "@open-ocpp-trace/jsonl/reader";
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_FILTER,
@@ -10,7 +11,7 @@ import { schemaErrors, rawFidelityErrors, type SpecRecord } from "../../trace/co
 import { callDoc, frameDoc, responseDoc, withStatuses } from "./fixtures";
 
 /** The export as one string. */
-const toJsonl = (...args: Parameters<typeof jsonlLines>) => jsonlLines(...args).join("");
+const toJsonl = (...args: Parameters<typeof jsonlLines>) => jsonlLines(...args).lines.join("");
 
 function storeWith() {
   const store = new TraceStore(100);
@@ -50,6 +51,31 @@ describe("toJsonl", () => {
       });
       expect(record).not.toHaveProperty("deliveries");
     }
+  });
+
+  it("reads back as the same records through the Open OCPP Trace JSONL reader", async () => {
+    const { store, call, result, error } = storeWith();
+    const read = [];
+    for await (const record of readRecords([toJsonl(store.entries(), "trace")])) read.push(record);
+    expect(read).toEqual([call, result, error].map((d) => d.kind === "trace" && d.trace));
+  });
+
+  it("skips and counts the trace records that are not valid Open OCPP Trace", () => {
+    const store = new TraceStore(10);
+    const valid = callDoc({ action: "Heartbeat" });
+    const invalid = callDoc({ action: "Authorize" });
+    if (invalid.kind !== "trace") throw new Error("expected a trace document");
+    store.addTrace({ ...invalid, trace: { ...invalid.trace, timestamp: "yesterday" } });
+    store.addTrace(valid);
+    const { lines: exported, skipped } = jsonlLines(store.entries(), "trace");
+    expect(exported).toEqual([`${JSON.stringify(valid.kind === "trace" && valid.trace)}\n`]);
+    expect(skipped).toBe(1);
+  });
+
+  it("skips nothing when every record is valid, nor in an unparsed-frame export", () => {
+    const { store } = storeWith();
+    expect(jsonlLines(store.entries(), "frame").skipped).toBe(0);
+    expect(jsonlLines(store.entries(), "trace").skipped).toBe(0);
   });
 
   it("exports the filtered messages only when given them", () => {

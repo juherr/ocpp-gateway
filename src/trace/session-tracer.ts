@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { SCHEMA_VERSION } from "@open-ocpp-trace/core";
 import type { TenantId } from "../tenants";
 import { Correlator } from "./correlator";
-import { connectorIdOf, parseOcppFrame } from "./frame";
+import { connectorIdOf, parseOcppFrame, type ParsedFrame } from "./frame";
 import {
   DELIVERY_STATUS_RANK,
   type Delivery,
@@ -11,7 +12,6 @@ import {
   type DropReason,
   type GatewayMeta,
   type OcppTraceRecord,
-  TRACE_SCHEMA_VERSION,
   type TraceDocument,
   type TraceSource,
   ocppVersionOf,
@@ -271,25 +271,32 @@ export class SessionTracer {
     const payload = f.messageType === "CALLERROR" ? undefined : f.payload;
     const connectorId = connectorIdOf(payload);
     const trace: OcppTraceRecord = {
-      schemaVersion: TRACE_SCHEMA_VERSION,
+      schemaVersion: SCHEMA_VERSION,
       timestamp: common.timestamp,
       ...(this.ocppVersion !== undefined && { ocppVersion: this.ocppVersion }),
       transport: "json",
       chargePointId,
       ...(connectorId !== undefined && { connectorId }),
       direction: routing.direction,
-      messageType: f.messageType,
-      messageId: f.messageId,
-      // Responses carry no action: consumers derive it from the correlated
-      // CALL (see `meta.gateway.correlation`), so it is never guessed here.
-      ...(f.messageType === "CALL" && { action: f.action }),
-      ...(f.messageType !== "CALLERROR" && { payload }),
-      raw,
-      ...(f.messageType === "CALLERROR" && { error: f.error }),
+      ...messageFields(f, raw),
       meta: { gateway },
     };
     return { ...base, kind: "trace", trace };
   }
+}
+
+/**
+ * The record fields that depend on the message type, in the record's key
+ * order. Responses carry no action: consumers derive it from the correlated
+ * CALL (see `meta.gateway.correlation`), so it is never guessed here.
+ */
+function messageFields(f: ParsedFrame, raw: string) {
+  const { messageType, messageId } = f;
+  if (messageType === "CALL") {
+    return { messageType, messageId, action: f.action, payload: f.payload, raw };
+  }
+  if (messageType === "CALLRESULT") return { messageType, messageId, payload: f.payload, raw };
+  return { messageType, messageId, raw, error: f.error };
 }
 
 class PendingFrame implements ReceivedFrame {

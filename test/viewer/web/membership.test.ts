@@ -13,7 +13,7 @@ import {
 import { callDoc, delivery, withStatuses } from "./fixtures";
 
 /** The export as one string. */
-const toJsonl = (...args: Parameters<typeof jsonlLines>) => jsonlLines(...args).join("");
+const toJsonl = (...args: Parameters<typeof jsonlLines>) => jsonlLines(...args).lines.join("");
 
 /**
  * What the page does with a delivery update under a delivery filter: the

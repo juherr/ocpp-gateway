@@ -180,8 +180,9 @@ Coolify can build the gateway from this repository using the existing [`docker-c
 1. Create a Docker Compose resource for this repository, select branch `main`, and use `/docker-compose.yml`.
 2. Enable automatic deployments for pushes to `main`.
 3. Create `routes.json` on the Coolify server and set `ROUTES_HOST_PATH` to its absolute host path. The file must already exist and be readable by the container's `node` user. It is mounted read-only at `/app/routes.json`; keep it out of Git. Without this variable, Compose uses `./routes.json` for local development.
-4. Set `LOG_LEVEL` and `LOG_DEBUG_MESSAGE_MAX_LENGTH` if needed. Compose enforces `PORT=9000`, `LISTEN_HOST=0.0.0.0`, and `ROUTES_FILE=/app/routes.json` regardless of values in `.env`.
-5. Add the public domain in Coolify, targeting container port `9000`. Connect charge points to `wss://<your-domain>/<chargeBoxId>`.
+4. Set `GITHUB_TOKEN` to a GitHub token with `read:packages`, available at build time: the build installs the Open OCPP Trace SDK from GitHub Packages (see [Building from source](#from-source)). Without it, the build fails with a `401`. Docker Compose reads the build secret from a variable that is only in `.env` from version 2.40.0; with an older Compose, the variable must be in the build's environment.
+5. Set `LOG_LEVEL` and `LOG_DEBUG_MESSAGE_MAX_LENGTH` if needed. Compose enforces `PORT=9000`, `LISTEN_HOST=0.0.0.0`, and `ROUTES_FILE=/app/routes.json` regardless of values in `.env`.
+6. Add the public domain in Coolify, targeting container port `9000`. Connect charge points to `wss://<your-domain>/<chargeBoxId>`.
 
 The routes file must contain a valid routing table. For the default route, set its primary backend to your SteVe WebSocket base URL; the gateway appends the URL-encoded charge-box ID. Coolify should report the service healthy when `GET /healthz` returns `200`. The health check uses Node.js, which is present in the runtime image.
 
@@ -195,6 +196,7 @@ cd ocpp-gateway
 cp routes.example.json routes.json
 # Edit routes.json with your CSMS URLs
 cp .env.example .env   # optional overrides (LOG_LEVEL, …)
+export GITHUB_TOKEN=$(gh auth token)   # read:packages, see "From source"
 docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
 ```
 
@@ -204,10 +206,18 @@ docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
 git clone https://github.com/juherr/ocpp-gateway.git
 cd ocpp-gateway
 mise install   # installs the pinned Node version (mise.toml); optional but recommended
+gh auth refresh -s read:packages      # once: gh's default scopes lack it
+export GITHUB_TOKEN=$(gh auth token)   # or any GitHub token with read:packages
 npm install
 npm run build
 cp routes.example.json routes.json
 ROUTES_FILE=./routes.json npm start
+```
+
+The build depends on the [Open OCPP Trace SDK](https://github.com/open-ocpp-trace/sdk) (`@open-ocpp-trace/core`, `@open-ocpp-trace/jsonl`), published to GitHub Packages, whose npm registry needs a token with `read:packages` even for a public package: `.npmrc` reads it from `GITHUB_TOKEN`. The SDK is bundled into `dist/`, so running the gateway needs no token. To build the image yourself, pass the token as a build secret:
+
+```bash
+docker build --secret id=github_token,env=GITHUB_TOKEN -t ocpp-gateway .
 ```
 
 ## Configuration
@@ -505,7 +515,7 @@ Open `http://127.0.0.1:9001/` (or wherever the viewer is exposed) and enter the 
 - **Pause** freezes the list: frames that arrive meanwhile are held aside (counted as *New while paused*, and on the button) and listed in reception order on *Resume*, with the gap markers in their place. Delivery updates keep applying to the rows shown and to the held frames. The held frames have the same bounds as the buffer, so a paused page holds at most twice them; past those bounds the oldest held frames are dropped, counted as *Dropped while paused*.
 - **Clear** empties the list and the held frames (a paused page stays paused). It only affects this page: neither the gateway, nor other viewers, nor the trace archive. The *Messages received* counter keeps counting from the page's opening.
 - **The buffer** keeps the last `VIEWER_MAX_BUFFERED_MESSAGES` entries (messages and gap markers) in the browser, and at most 64 MiB of raw frames (a single larger frame is kept alone); older ones are dropped from the page, counted as *Removed from buffer*. Nothing is stored on the server.
-- **Export** downloads the list as [JSON Lines](https://jsonlines.org) (`ocpp-traces-<time>.jsonl`): *Export traces (filtered)* the messages the filters show, *Export traces (all)* every message in the list (not the frames held while paused). Each line is an Open OCPP Trace v1.1 record exactly as the gateway streamed it, gateway metadata (`meta.gateway`) included; delivery outcomes are not part of the record and are left out. Unparsed frames are never exported as traces: *Export unparsed frames* writes them to their own file (`ocpp-unparsed-frames-<time>.jsonl`, one frame object per line). Exporting needs no MongoDB and does not change the messages shown.
+- **Export** downloads the list as [JSON Lines](https://jsonlines.org) (`ocpp-traces-<time>.jsonl`): *Export traces (filtered)* the messages the filters show, *Export traces (all)* every message in the list (not the frames held while paused). Each line is an Open OCPP Trace v1.1 record exactly as the gateway streamed it, gateway metadata (`meta.gateway`) included; delivery outcomes are not part of the record and are left out. Records are written and validated with the Open OCPP Trace SDK: one that is not valid is left out of the file, and the status line says how many were skipped. Unparsed frames are never exported as traces: *Export unparsed frames* writes them to their own file (`ocpp-unparsed-frames-<time>.jsonl`, one frame object per line). Exporting needs no MongoDB and does not change the messages shown.
 - **Raw data.** Payloads are shown and exported as received, unmasked: RFID tags, authorization tokens, transaction ids and possibly personal data. Every export asks for confirmation first, saying so; keep the files private.
 - **The connection state**, next to the title: `Connecting…`, `Live`, `Disconnected` (with the time until the next attempt), `Reconnecting…`, or `Authentication failed`. The page reconnects by itself after an interruption, waiting 1 s, then twice as long after each failure up to 30 s (randomised, and at least the server's `Retry-After`), and starting over at 1 s once a connection has lasted 10 s. Wrong credentials stop the retries: reload the page to enter them again. Messages already shown stay available in every state.
 - **Gaps.** Every interruption adds a marker: *possible gap between t1 and t2*, noting when the gateway restarted meanwhile. Frames received by the gateway during an interruption are never recovered (there is no history), and the delivery statuses already shown may miss updates sent meanwhile. When the gateway drops events for a page that falls behind, a marker says how many events were missed. Back-to-back markers of the same kind are merged.
@@ -580,3 +590,5 @@ This project is a fork of [joulo-ocpp-proxy](https://github.com/joulo-nl/joulo-o
 ## License
 
 [MIT](LICENSE) — use it however you like.
+
+The bundles in `dist/` include third-party code under its own license: the [Open OCPP Trace SDK](https://github.com/open-ocpp-trace/sdk) (Apache-2.0) and, in the viewer page, [Prism](https://prismjs.com) (MIT).
