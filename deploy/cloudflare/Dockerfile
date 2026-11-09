@@ -5,7 +5,7 @@
 # on GitHub Packages), so the bundle is built beforehand: the `predev`,
 # `predry-run` and `predeploy` scripts run the root `npm run build`.
 # Build context: the repository root (wrangler.jsonc `image_build_context`).
-FROM node:24-alpine
+FROM node:26-alpine
 WORKDIR /app
 COPY package*.json ./
 # --ignore-scripts: skip the `prepare` (husky) lifecycle script — husky is a

@@ -37,7 +37,7 @@ CI (`cloudflare` job in `.github/workflows/docker.yml`) runs the root `npm ci`, 
 - An **edge certificate covering `*.ocpp.example.com`**: Universal SSL only covers first-level subdomains (`*.example.com`), so use Advanced Certificate Manager / Total TLS, or put tenants directly under the zone (`*.example.com`).
 - Docker (or a compatible engine) running locally: `wrangler` builds the image from `Dockerfile` (`linux/amd64`).
 - The gateway's dependencies installed at the repository root (`npm ci` with `GITHUB_TOKEN` set to a token with `read:packages`), for the `dist/` the image copies.
-- Node 24 (see the repository's `mise.toml`).
+- Node 26 (see the repository's `mise.toml`).
 
 ## Configuration
 

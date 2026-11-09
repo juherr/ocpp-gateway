@@ -48,3 +48,8 @@ updates:
       - "/deploy/cloudflare"
     schedule:
       interval: weekly
+    ignore:
+      # The node image tracks the Node major pinned in mise.toml.
+      - dependency-name: "node"
+        update-types:
+          - version-update:semver-major
