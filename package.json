@@ -60,7 +60,7 @@
     "vitest": "5.1.0"
   },
   "lint-staged": {
-    "*.{ts,js,mjs,cjs}": [
+    "*.{ts,mts,js,mjs,cjs}": [
       "vp fmt --write",
       "vp lint --fix"
     ]

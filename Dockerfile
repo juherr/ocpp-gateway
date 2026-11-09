@@ -15,7 +15,7 @@ COPY package*.json .npmrc ./
 # it can push images); the build needs no install script, and `prepare`
 # (husky) is irrelevant here.
 RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN npm ci --ignore-scripts
-COPY tsconfig.json tsconfig.web.json vite.config.ts ./
+COPY tsconfig.json tsconfig.web.json vite.config.mts ./
 COPY src ./src
 # The viewer's page, built into dist/viewer/ next to the bundle.
 COPY web ./web
