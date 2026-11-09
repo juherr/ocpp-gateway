@@ -11,7 +11,10 @@ COPY package*.json .npmrc ./
 # never as an argument: `docker build --secret id=github_token,env=GITHUB_TOKEN .`
 # The SDK is a dev dependency bundled into dist/, so the runtime stage below
 # installs nothing from that registry and needs no token.
-RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN npm ci
+# --ignore-scripts: no dependency code runs while the token is mounted (in CI
+# it can push images); the build needs no install script, and `prepare`
+# (husky) is irrelevant here.
+RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN npm ci --ignore-scripts
 COPY tsconfig.json tsconfig.web.json vite.config.ts ./
 COPY src ./src
 # The viewer's page, built into dist/viewer/ next to the bundle.
