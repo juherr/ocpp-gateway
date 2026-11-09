@@ -180,7 +180,7 @@ Coolify can build the gateway from this repository using the existing [`docker-c
 1. Create a Docker Compose resource for this repository, select branch `main`, and use `/docker-compose.yml`.
 2. Enable automatic deployments for pushes to `main`.
 3. Create `routes.json` on the Coolify server and set `ROUTES_HOST_PATH` to its absolute host path. The file must already exist and be readable by the container's `node` user. It is mounted read-only at `/app/routes.json`; keep it out of Git. Without this variable, Compose uses `./routes.json` for local development.
-4. Set `GITHUB_TOKEN` to a GitHub token with `read:packages`, available at build time: the build installs the Open OCPP Trace SDK from GitHub Packages (see [Building from source](#from-source)). Without it, the build fails with a `401`.
+4. Set `GITHUB_TOKEN` to a GitHub token with `read:packages`, available at build time: the build installs the Open OCPP Trace SDK from GitHub Packages (see [Building from source](#from-source)). Without it, the build fails with a `401`. Docker Compose reads the build secret from a variable that is only in `.env` from version 2.40.0; with an older Compose, the variable must be in the build's environment.
 5. Set `LOG_LEVEL` and `LOG_DEBUG_MESSAGE_MAX_LENGTH` if needed. Compose enforces `PORT=9000`, `LISTEN_HOST=0.0.0.0`, and `ROUTES_FILE=/app/routes.json` regardless of values in `.env`.
 6. Add the public domain in Coolify, targeting container port `9000`. Connect charge points to `wss://<your-domain>/<chargeBoxId>`.
 

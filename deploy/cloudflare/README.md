@@ -62,8 +62,9 @@ cp ../../routes.multi-tenant.example.json routes.json   # edit with your CSMS UR
 
 # First deployment: the Worker does not exist yet, so `wrangler secret put`
 # cannot set ROUTES_JSON beforehand; pass it with the deployment instead.
+# Through npm, so `predeploy` bundles the gateway into ../../dist first.
 jq -n --rawfile routes routes.json '{ROUTES_JSON: $routes}' > secrets.json
-npx wrangler deploy --secrets-file secrets.json && rm secrets.json
+npm run deploy -- --secrets-file secrets.json && rm secrets.json
 
 # Later deployments
 npm run deploy   # builds the image, pushes it and deploys the Worker
