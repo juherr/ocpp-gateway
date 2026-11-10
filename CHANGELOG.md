@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Prefix patterns in the routes file: a `chargers` key ending with `*`, such
+  as `"ACME-*"`, routes every chargeBoxId starting with `ACME-`, so a family of
+  charge points no longer has to be listed one by one. An exact chargeBoxId
+  wins over a pattern, the longest matching prefix wins over a shorter one,
+  and `default` applies when nothing matches. Also within a tenant.
 - Optional limits on concurrent charger sessions: `MAX_SESSIONS` (live
   sessions), `MAX_PENDING_SESSIONS` (sessions whose primary CSMS link is still
   connecting, where the memory goes) and `MAX_SESSIONS_PER_SOURCE` (per client
@@ -105,6 +110,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A `chargers` key ending with `*` in the routes file is now a prefix pattern,
+  no longer an exact chargeBoxId, and a `*` anywhere else in a key fails the
+  load. Rename such keys before upgrading.
 - **Building from source or the Docker image now needs a GitHub token with
   `read:packages`** in `GITHUB_TOKEN`: the gateway uses the
   [Open OCPP Trace SDK](https://github.com/open-ocpp-trace/sdk)

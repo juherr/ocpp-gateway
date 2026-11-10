@@ -174,6 +174,144 @@ describe("resolveRoute", () => {
   );
 });
 
+describe("prefix patterns", () => {
+  const PATTERN_TABLE = {
+    default: { primary: "ws://x/default" },
+    chargers: {
+      "ACME-*": { primary: "ws://x/acme" },
+      "ACME-EU-*": { primary: "ws://x/acme-eu" },
+      "ACME-EU-007": { primary: "ws://x/exact" },
+    },
+  };
+  const primaryOf = (table: RouteTable, id: string, tenantId: TenantId | null = null) =>
+    resolveRoute(table, tenantId, id)?.primary.url;
+
+  it("routes every chargeBoxId starting with the prefix", () => {
+    const t = parseRouteTable(PATTERN_TABLE);
+    expect(primaryOf(t, "ACME-001")).toBe("ws://x/acme");
+    expect(primaryOf(t, "ACME-XYZ-42")).toBe("ws://x/acme");
+  });
+
+  it("matches the bare prefix too (zero or more characters)", () => {
+    expect(primaryOf(parseRouteTable(PATTERN_TABLE), "ACME-")).toBe("ws://x/acme");
+  });
+
+  it("prefers an exact charger over any pattern", () => {
+    expect(primaryOf(parseRouteTable(PATTERN_TABLE), "ACME-EU-007")).toBe("ws://x/exact");
+  });
+
+  it.each([
+    [
+      "longest first",
+      { "ACME-EU-*": { primary: "ws://x/acme-eu" }, "ACME-*": { primary: "ws://x/acme" } },
+    ],
+    [
+      "shortest first",
+      { "ACME-*": { primary: "ws://x/acme" }, "ACME-EU-*": { primary: "ws://x/acme-eu" } },
+    ],
+  ])("uses the longest matching prefix whatever the key order (%s)", (_order, chargers) => {
+    const t = parseRouteTable({ chargers, default: { primary: "ws://x/default" } });
+    expect(primaryOf(t, "ACME-EU-001")).toBe("ws://x/acme-eu");
+    expect(primaryOf(t, "ACME-US-001")).toBe("ws://x/acme");
+  });
+
+  it("falls back to the default route when no pattern matches", () => {
+    const t = parseRouteTable(PATTERN_TABLE);
+    expect(primaryOf(t, "CP-001")).toBe("ws://x/default");
+    expect(primaryOf(t, "ACME")).toBe("ws://x/default");
+  });
+
+  it("matches case-sensitively", () => {
+    expect(primaryOf(parseRouteTable(PATTERN_TABLE), "acme-001")).toBe("ws://x/default");
+  });
+
+  it("resolves nothing when no pattern matches and there is no default", () => {
+    const t = parseRouteTable({
+      tenants: { acme: { chargers: { "ACME-*": { primary: "ws://x/acme" } } } },
+    });
+    expect(primaryOf(t, "ACME-001", "acme")).toBe("ws://x/acme");
+    expect(resolveRoute(t, "acme", "CP-001")).toBeNull();
+  });
+
+  it("never applies a tenant's pattern to another scope", () => {
+    const t = parseRouteTable({
+      default: { primary: "ws://x/default" },
+      tenants: {
+        acme: { chargers: { "ACME-*": { primary: "ws://x/acme" } } },
+        globex: { default: { primary: "ws://x/globex" } },
+      },
+    });
+    expect(primaryOf(t, "ACME-001", "globex")).toBe("ws://x/globex");
+    expect(primaryOf(t, "ACME-001")).toBe("ws://x/default");
+  });
+
+  it("keeps a pattern out of the exact chargers", () => {
+    const t = parseRouteTable(PATTERN_TABLE);
+    expect([...t.chargers.keys()]).toEqual(["ACME-EU-007"]);
+  });
+
+  it.each(["*", "A*B", "ACME-**", "*ACME"])("rejects the charger key %j", (key) => {
+    expect(() =>
+      parseRouteTable({
+        default: { primary: "ws://x/d" },
+        chargers: { [key]: { primary: "ws://x/p" } },
+      }),
+    ).toThrow(`"chargers.${key}"`);
+  });
+
+  it("explains that a bare * is the default route", () => {
+    expect(() =>
+      parseRouteTable({
+        default: { primary: "ws://x/d" },
+        chargers: { "*": { primary: "ws://x/p" } },
+      }),
+    ).toThrow(/use "default"/);
+  });
+
+  it("validates the route of a pattern", () => {
+    expect(() =>
+      parseRouteTable({ default: { primary: "ws://x/d" }, chargers: { "ACME-*": {} } }),
+    ).toThrow(/route "chargers.ACME-\*" must define a "primary"/);
+  });
+
+  it("checks backend ids across pattern routes", () => {
+    expect(() =>
+      parseRouteTable({
+        default: { primary: { id: "csms", url: "wss://csms.example.com/ocpp" } },
+        chargers: { "ACME-*": { primary: { id: "csms", url: "wss://other.example.com/ocpp" } } },
+      }),
+    ).toThrow(/backend id "csms" names different servers/);
+  });
+
+  it("requires backend ids on pattern routes when asked", () => {
+    expect(() =>
+      parseRouteTable(
+        {
+          default: { primary: { id: "csms", url: "wss://csms.example.com/ocpp" } },
+          chargers: { "ACME-*": { primary: "wss://acme.example.com/ocpp" } },
+        },
+        { requireBackendIds: true },
+      ),
+    ).toThrow(/route "chargers.ACME-\*" primary must have an "id"/);
+  });
+
+  it("picks up a new pattern on reload", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocpp-gateway-routes-"));
+    try {
+      const path = join(dir, "routes.json");
+      writeFileSync(path, JSON.stringify(TABLE));
+      const store = RouteStore.load(path);
+      expect(store.resolve(null, "ACME-001")?.primary.url).toBe("wss://csms.example.com/ocpp");
+
+      writeFileSync(path, JSON.stringify(PATTERN_TABLE));
+      store.reload();
+      expect(store.resolve(null, "ACME-001")?.primary.url).toBe("ws://x/acme");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+});
+
 const TENANT_TABLE = {
   default: { primary: "wss://csms.example.com/ocpp" },
   tenants: {
@@ -213,6 +351,13 @@ describe("parseRouteTable with tenants", () => {
     expect(() =>
       parseRouteTable({ tenants: { [id]: { default: { primary: "ws://x/y" } } } }),
     ).toThrow(/tenant id/);
+  });
+
+  it("accepts a tenant whose only route is a pattern", () => {
+    const t = parseRouteTable({
+      tenants: { acme: { chargers: { "ACME-*": { primary: "ws://x/y" } } } },
+    });
+    expect(t.tenants.get("acme")?.prefixes).toHaveLength(1);
   });
 
   it("rejects a tenant without any route", () => {
