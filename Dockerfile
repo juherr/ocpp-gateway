@@ -6,6 +6,9 @@
 FROM --platform=$BUILDPLATFORM node:26 AS build
 WORKDIR /app
 COPY package*.json .npmrc ./
+# The Open OCPP Trace viewer, a dev dependency from a vendored tarball until
+# its first release (bundled into dist/viewer-next/).
+COPY vendor ./vendor
 # The Open OCPP Trace SDK comes from GitHub Packages, which needs a token even
 # for a public package (.npmrc reads GITHUB_TOKEN). Passed as a build secret,
 # never as an argument: `docker build --secret id=github_token,env=GITHUB_TOKEN .`

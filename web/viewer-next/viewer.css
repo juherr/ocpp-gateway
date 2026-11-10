@@ -1,0 +1,101 @@
+/* Served as a file: the viewer's CSP (style-src 'self') allows no inline
+   style. The Open OCPP Trace viewer styles itself inside its shadow root,
+   through constructable stylesheets, which that CSP allows too. */
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  height: 100vh;
+  box-sizing: border-box;
+  padding: 1rem;
+}
+
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+}
+
+.top h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.tag {
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  vertical-align: middle;
+  background: #b8860b33;
+}
+
+.switch {
+  margin-left: auto;
+}
+
+.badge {
+  margin: 0;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  font-weight: 600;
+  background: #8884;
+}
+
+.badge[data-state="connected"] {
+  background: #1a7f3c33;
+}
+
+.badge[data-state="reconnecting"],
+.badge[data-state="connecting"] {
+  background: #b8860b33;
+}
+
+.badge[data-state="auth-failed"],
+.badge[data-state="disconnected"] {
+  background: #c0392b33;
+}
+
+.counters dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  margin: 0;
+}
+
+.counters div {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.counters dt {
+  opacity: 0.8;
+}
+
+.counters dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.notice {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 4px solid #b8860b;
+  background: #b8860b22;
+}
+
+.viewer {
+  flex: 1;
+  min-height: 20rem;
+}

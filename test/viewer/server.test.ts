@@ -248,6 +248,77 @@ describe("viewer server", () => {
     });
   });
 
+  describe("experimental page (/next/)", () => {
+    const NEXT = {
+      html: "<!doctype html><title>next test page</title>",
+      js: "/* next test script */",
+      css: "/* next test style */",
+    };
+
+    it("serves its page and assets under /next/, beside the unchanged page", async () => {
+      const port = await start({}, { next: NEXT });
+
+      for (const [path, type, content] of [
+        ["/next/", "text/html; charset=utf-8", NEXT.html],
+        ["/next/viewer.js", "text/javascript; charset=utf-8", NEXT.js],
+        ["/next/viewer.css", "text/css; charset=utf-8", NEXT.css],
+        ["/", "text/html; charset=utf-8", ASSETS.html],
+        ["/viewer.js", "text/javascript; charset=utf-8", ASSETS.js],
+        ["/viewer.css", "text/css; charset=utf-8", ASSETS.css],
+      ] as const) {
+        const res = await get(port, `${path}?v=1`, { headers: auth() });
+        expect(res.status, path).toBe(200);
+        expect(res.headers["content-type"], path).toBe(type);
+        expect(res.body, path).toBe(content);
+        expectSecurityHeaders(res);
+      }
+    });
+
+    it.each(["/next/", "/next/viewer.js", "/next/viewer.css", "/next"])(
+      "asks for authentication on %s",
+      async (path) => {
+        const port = await start({}, { next: NEXT });
+
+        const res = await get(port, path);
+        expect(res.status).toBe(401);
+        expect(res.body).not.toContain("next test");
+        expectSecurityHeaders(res);
+      },
+    );
+
+    // Its asset URLs are relative: served at /next, the page would load the other page's script.
+    it("redirects /next to /next/ with a relative location, never serving the page there", async () => {
+      const port = await start({}, { next: NEXT });
+
+      const res = await get(port, "/next?x=1", { headers: auth() });
+      expect(res.status).toBe(308);
+      expect(res.headers.location).toBe("next/");
+      expect(res.body).not.toContain("next test");
+      expectSecurityHeaders(res);
+    });
+
+    it.each([
+      "/next/index.html",
+      "/next//viewer.js",
+      "/next/events",
+      "/next/viewer.js/",
+      "/nextviewer.js",
+    ])("answers %s with 404", async (path) => {
+      const port = await start({}, { next: NEXT });
+
+      expect((await get(port, path, { headers: auth() })).status).toBe(404);
+    });
+
+    it.each(["/next", "/next/", "/next/viewer.js", "/next/viewer.css"])(
+      "answers %s with 404 when the page is not given",
+      async (path) => {
+        const port = await start();
+
+        expect((await get(port, path, { headers: auth() })).status).toBe(404);
+      },
+    );
+  });
+
   describe("failed authentication limit", () => {
     it("answers 429 with Retry-After once a source failed too often, even with valid credentials", async () => {
       const port = await start();

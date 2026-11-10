@@ -520,6 +520,15 @@ Open `http://127.0.0.1:9001/` (or wherever the viewer is exposed) and enter the 
 - **The connection state**, next to the title: `Connecting…`, `Live`, `Disconnected` (with the time until the next attempt), `Reconnecting…`, or `Authentication failed`. The page reconnects by itself after an interruption, waiting 1 s, then twice as long after each failure up to 30 s (randomised, and at least the server's `Retry-After`), and starting over at 1 s once a connection has lasted 10 s. Wrong credentials stop the retries: reload the page to enter them again. Messages already shown stay available in every state.
 - **Gaps.** Every interruption adds a marker: *possible gap between t1 and t2*, noting when the gateway restarted meanwhile. Frames received by the gateway during an interruption are never recovered (there is no history), and the delivery statuses already shown may miss updates sent meanwhile. When the gateway drops events for a page that falls behind, a marker says how many events were missed. Back-to-back markers of the same kind are merged.
 
+### Experimental page: the Open OCPP Trace viewer
+
+`http://127.0.0.1:9001/next/` (same credentials, same security headers; `/next` redirects there) shows the same live stream in the [Open OCPP Trace viewer](https://github.com/open-ocpp-trace/viewer) (`@open-ocpp-trace/viewer-standalone`, bundled into the page), beside the page above, which stays the default. It is a feasibility preview ahead of that viewer's first release, and may change or go away.
+
+- The transport, reconnection and event decoding are the page above's; each `trace` event becomes a viewer entry whose record is the gateway's record, untouched, with the tenant, charge point, session (also the correlation scope), source and deliveries as metadata. A frame Open OCPP Trace cannot represent is an *unparsed* entry. `delivery` events update the entry in place, forward only (an older or unknown update is ignored). A `gap` event, an interruption and a gateway restart each add a gap entry.
+- The viewer brings its own list, detail, filters (including delivery status), pause and JSON Lines export of the selection or of the filtered records (after the same raw-data warning). The counters above it show what the page received, listed, removed from its buffer, dropped while paused or ignored.
+- The buffer size is the first `hello`'s `maxBufferedMessages`: after a gateway restart with another value, reload the page to use it. There is no history, as above.
+- Its asset and stream URLs are relative (`viewer.js`, `../events`), so it also works behind a reverse proxy that serves the viewer under a base path.
+
 ### The live stream
 
 `GET /events` (authenticated like every route) is a [Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html) stream of the frames received from then on, by chargers, primary and secondary CSMS, of every scope not set to `viewer: false`:

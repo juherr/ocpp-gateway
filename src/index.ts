@@ -74,11 +74,14 @@ async function main() {
   // updated table.
   routes.watch();
 
-  // The page, built next to the bundle (dist/viewer/), read once.
+  // The page, built next to the bundle (dist/viewer/), read once; the
+  // experimental page on the Open OCPP Trace viewer too (dist/viewer-next/).
   let viewerAssets: ViewerAssets | undefined;
+  let nextViewerAssets: ViewerAssets | undefined;
   if (config.viewer) {
     try {
       viewerAssets = loadViewerAssets(join(__dirname, "viewer"));
+      nextViewerAssets = loadViewerAssets(join(__dirname, "viewer-next"));
     } catch (err) {
       return fail("failed to load the viewer page", err);
     }
@@ -114,7 +117,11 @@ async function main() {
   const viewer =
     config.viewer &&
     viewerAssets &&
-    startViewer(config.viewer, { assets: viewerAssets, events: hub?.handle });
+    startViewer(config.viewer, {
+      assets: viewerAssets,
+      next: nextViewerAssets,
+      events: hub?.handle,
+    });
   if (viewer) {
     viewer.server.once("error", exitOnListenError);
     viewer.server.once("listening", () => viewer.server.off("error", exitOnListenError));
