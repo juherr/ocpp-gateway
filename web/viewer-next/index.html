@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>OCPP Gateway — Live Traces (experimental)</title>
+    <link rel="stylesheet" href="viewer.css" />
+    <script src="viewer.js" defer></script>
+  </head>
+  <body>
+    <main class="page">
+      <header class="top">
+        <h1>OCPP Gateway — Live Traces <span class="tag">experimental</span></h1>
+        <p id="connection" class="badge" data-state="connecting" role="status">Connecting…</p>
+        <a class="switch" href="../">Classic viewer</a>
+      </header>
+      <p id="notice" class="notice" role="alert" hidden></p>
+
+      <section class="counters" aria-label="Counters">
+        <dl>
+          <div>
+            <dt>Received</dt>
+            <dd id="count-received">0</dd>
+          </div>
+          <div>
+            <dt>Listed</dt>
+            <dd id="count-listed">0</dd>
+          </div>
+          <div>
+            <dt>Held while paused</dt>
+            <dd id="count-pending">0</dd>
+          </div>
+          <div>
+            <dt>Removed from buffer</dt>
+            <dd id="count-evicted">0</dd>
+          </div>
+          <div>
+            <dt>Dropped while paused</dt>
+            <dd id="count-dropped-pending">0</dd>
+          </div>
+          <div>
+            <dt>Dropped by the gateway</dt>
+            <dd id="count-dropped-by-server">0</dd>
+          </div>
+          <div>
+            <dt>Delivery updates</dt>
+            <dd id="count-delivery-updates">0</dd>
+          </div>
+          <div>
+            <dt>Ignored updates</dt>
+            <dd id="count-ignored-updates">0</dd>
+          </div>
+          <div>
+            <dt>Invalid entries</dt>
+            <dd id="count-invalid">0</dd>
+          </div>
+          <div>
+            <dt>Skipped events</dt>
+            <dd id="count-skipped">0</dd>
+          </div>
+        </dl>
+      </section>
+
+      <div id="viewer" class="viewer"></div>
+    </main>
+  </body>
+</html>
