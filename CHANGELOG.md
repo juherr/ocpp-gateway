@@ -102,6 +102,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that is not valid v1.1 is left out, and the count shown), unparsed frames
   in a separate file, after a warning that the file holds raw, unmasked
   OCPP data.
+- An experimental second viewer page at `/next/`, beside the existing one,
+  showing the same live stream in the
+  [Open OCPP Trace viewer](https://github.com/open-ocpp-trace/viewer):
+  records untouched, delivery updates applied in place, gaps for dropped
+  events, interruptions and gateway restarts, and the viewer's own filters,
+  pause and JSON Lines export. Same authentication and security headers;
+  relative URLs, so it works under a reverse proxy's base path. A preview
+  ahead of that viewer's first release.
 
 ### Changed
 
