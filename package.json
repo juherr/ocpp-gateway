@@ -49,6 +49,7 @@
     "@commitlint/config-conventional": "^21.2.4",
     "@open-ocpp-trace/core": "^0.1.0",
     "@open-ocpp-trace/jsonl": "^0.1.0",
+    "@open-ocpp-trace/viewer-standalone": "file:vendor/open-ocpp-trace-viewer-standalone-0.0.0.tgz",
     "@types/node": "^26.6.6",
     "@types/prismjs": "^1.26.6",
     "@types/ws": "^8.18.2",
