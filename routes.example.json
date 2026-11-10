@@ -15,6 +15,10 @@
         "appendChargeBoxId": false
       },
       "secondaries": []
+    },
+    "ACME-*": {
+      "primary": { "id": "acme-csms", "url": "wss://acme-csms.example.com/ocpp" },
+      "secondaries": []
     }
   }
 }

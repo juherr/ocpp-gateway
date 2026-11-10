@@ -40,13 +40,22 @@ export interface Route {
   secondaries: Backend[];
 }
 
+/** A `chargers` key ending with `*`: every chargeBoxId starting with `prefix`. */
+export interface PrefixRoute {
+  prefix: string;
+  route: Route;
+}
+
 /**
- * One routing scope: an optional `default` route plus exact-match overrides
- * keyed by chargeBoxId. Maps, so no id can collide with `Object.prototype`.
+ * One routing scope: an optional `default` route plus overrides keyed by
+ * chargeBoxId, exact or prefix patterns. A Map, so no id can collide with
+ * `Object.prototype`.
  */
 export interface RouteScope {
   default?: Route;
   chargers: Map<string, Route>;
+  /** Prefix patterns, longest prefix first. */
+  prefixes: PrefixRoute[];
   /** Whether trace archiving (when enabled) records this scope's sessions. Default: true. */
   trace: boolean;
   /** Whether the live viewer (when enabled) shows this scope's sessions. Default: true. */
@@ -155,7 +164,11 @@ function parseRoute(value: unknown, where: string, options: RouteTableOptions): 
  */
 function checkBackendIds(scope: RouteScope, label: string): void {
   const servers = new Map<string, string>();
-  const routes = [...(scope.default ? [scope.default] : []), ...scope.chargers.values()];
+  const routes = [
+    ...(scope.default ? [scope.default] : []),
+    ...scope.chargers.values(),
+    ...scope.prefixes.map(({ route }) => route),
+  ];
   for (const route of routes) {
     for (const { id, url } of [route.primary, ...route.secondaries]) {
       if (id === undefined) continue;
@@ -181,6 +194,22 @@ function parseScopeFlag(value: Record<string, unknown>, name: ScopeFlag, path: s
   return flag;
 }
 
+/**
+ * The prefix of a `chargers` key ending with `*`, or `null` for an exact id.
+ * `*` is only allowed once, at the end, after at least one character.
+ */
+function parsePrefix(key: string, where: string): string | null {
+  const star = key.indexOf("*");
+  if (star === -1) return null;
+  if (key === "*") {
+    throw new Error(`"${where}" matches every charger: use "default" instead`);
+  }
+  if (star === 0 || star !== key.length - 1) {
+    throw new Error(`"${where}" may only end with "*" (a prefix pattern), with no other "*"`);
+  }
+  return key.slice(0, -1);
+}
+
 /** Parse the `default` and `chargers` of a scope found at `path` ("" for the root). */
 function parseScope(
   value: Record<string, unknown>,
@@ -190,6 +219,7 @@ function parseScope(
   const chargersPath = `${path}chargers`;
   const scope: RouteScope = {
     chargers: new Map(),
+    prefixes: [],
     trace: parseScopeFlag(value, "trace", path),
     viewer: parseScopeFlag(value, "viewer", path),
   };
@@ -197,9 +227,14 @@ function parseScope(
     if (!isPlainObject(value.chargers)) {
       throw new Error(`"${chargersPath}" must be an object keyed by chargeBoxId`);
     }
-    for (const [id, route] of Object.entries(value.chargers)) {
-      scope.chargers.set(id, parseRoute(route, `${chargersPath}.${id}`, options));
+    for (const [key, entry] of Object.entries(value.chargers)) {
+      const where = `${chargersPath}.${key}`;
+      const prefix = parsePrefix(key, where);
+      const route = parseRoute(entry, where, options);
+      if (prefix === null) scope.chargers.set(key, route);
+      else scope.prefixes.push({ prefix, route });
     }
+    scope.prefixes.sort((a, b) => b.prefix.length - a.prefix.length);
   }
   if (value.default !== undefined) {
     scope.default = parseRoute(value.default, `${path}default`, options);
@@ -239,7 +274,7 @@ function parseTenants(value: unknown, table: RouteTable, options: RouteTableOpti
     }
     const scope = parseScope(tenant, `tenants.${tenantId}.`, options);
     checkBackendIds(scope, `tenant "${tenantId}"`);
-    if (!scope.default && scope.chargers.size === 0) {
+    if (!scope.default && scope.chargers.size === 0 && scope.prefixes.length === 0) {
       throw new Error(`tenant "${tenantId}" must define a "default" route or at least one charger`);
     }
     table.tenants.set(tenantId, scope);
@@ -281,7 +316,8 @@ export function parseRouteTable(value: unknown, options: RouteTableOptions = {})
 /**
  * Resolve the route for a charger. Without a tenant (`null`), the global
  * scope applies; with one, only that tenant's scope does. In both, an exact
- * match in `chargers` wins, otherwise the scope's `default` is used.
+ * match in `chargers` wins, then the longest matching prefix pattern, then
+ * the scope's `default`.
  * Returns `null` when the tenant is unknown or the scope has no match.
  */
 export function resolveRoute(
@@ -291,7 +327,12 @@ export function resolveRoute(
 ): Route | null {
   const scope = tenantId === null ? table : table.tenants.get(tenantId);
   if (!scope) return null;
-  return scope.chargers.get(chargeBoxId) ?? scope.default ?? null;
+  return (
+    scope.chargers.get(chargeBoxId) ??
+    scope.prefixes.find(({ prefix }) => chargeBoxId.startsWith(prefix))?.route ??
+    scope.default ??
+    null
+  );
 }
 
 /**
@@ -423,6 +464,7 @@ export class RouteStore {
       log.info("routes reloaded", {
         path: this.path,
         chargers: this.table.chargers.size,
+        prefixes: this.table.prefixes.length,
         tenants: this.table.tenants.size,
         untraced: disabledScopes(this.table, "trace"),
         unviewed: disabledScopes(this.table, "viewer"),

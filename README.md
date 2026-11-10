@@ -61,23 +61,27 @@ Routing is driven by a JSON file (path from `ROUTES_FILE`, default `./routes.jso
     "CP-002": {
       "primary": { "url": "wss://fixed-csms.example.com/XXXXXXXX", "appendChargeBoxId": false },
       "secondaries": []
+    },
+    "ACME-*": {
+      "primary": "wss://acme-csms.example.com/ocpp"
     }
   }
 }
 ```
 
 - **`default`** (required, unless the file defines [`tenants`](#multi-tenant-routing)) — route used for any chargeBoxId not listed under `chargers`.
-- **`chargers`** (optional) — exact-match overrides keyed by chargeBoxId.
+- **`chargers`** (optional) — overrides keyed by chargeBoxId. A key ending with `*` is a **prefix pattern**: `"ACME-*"` matches every chargeBoxId starting with `ACME-` (including `ACME-` itself), case-sensitively, so a whole family of charge points needs one entry. `*` is only allowed at the end, after at least one character; use `default` to match every charger.
 - Each route has a `primary` backend (required) and `secondaries` (array of backends, optional).
 - A backend is either a URL string or an object `{ "id": "...", "url": "...", "appendChargeBoxId": false }`. `appendChargeBoxId` defaults to `true`; a bare string is shorthand for `{ "url": "...", "appendChargeBoxId": true }`.
 - `id` (optional, **required with [trace archiving](#trace-archiving-optional)**) is a stable name for the logical CSMS, used instead of its URL (which may carry credentials) wherever the gateway records it: 1–64 letters, digits, `.`, `_` or `-`, starting with a letter or digit. Within a route, ids are unique; within a scope (the global routes, or one tenant), the same id always names the same server — scheme, host and port — while paths, queries and credentials may differ (e.g. per-charger endpoints with `appendChargeBoxId: false`). Different tenants may reuse an id. [`routes.example.json`](routes.example.json) gives every backend an id.
 
-**Resolution:** for a charger with id `X`, the gateway uses `chargers["X"]` if present, otherwise `default`.
+**Resolution:** for a charger with id `X`, the gateway uses `chargers["X"]` if present, otherwise the pattern with the **longest** prefix that `X` starts with, otherwise `default`.
 
 **Target URL:** for every upstream (primary and each secondary), the gateway appends the url-encoded chargeBoxId as a path segment: `<baseUrl>/<chargeBoxId>` (query parameters are kept). Different backends may therefore use entirely different base paths. For CSMS endpoints that use a fixed URL per charger, set `appendChargeBoxId: false` and the URL is used as-is. Credentials in a backend URL (userinfo, query parameter values, fragment) are masked wherever the URL is logged. In the example above:
 
 - `CP-001` → primary `wss://primary-csms.example.com/ocpp/CP-001`, secondary `wss://analytics.example.com/ocpp/CP-001`
 - `CP-002` → primary `wss://fixed-csms.example.com/XXXXXXXX` (unchanged), no secondary
+- `ACME-042` → primary `wss://acme-csms.example.com/ocpp/ACME-042`, no secondary
 - every other charger → `wss://csms.example.com/ocpp/<chargeBoxId>` only
 
 ### Hot reload
@@ -112,7 +116,7 @@ Add a `tenants` map to the routes file (see [`routes.multi-tenant.example.json`]
 ```
 
 - A **tenant id** is a lowercase DNS label (`a-z`, `0-9`, `-`).
-- A tenant has its own `default` and/or `chargers` (at least one of them). A tenant **never falls back** to the global routes: a charger with no match in its tenant is rejected.
+- A tenant has its own `default` and/or `chargers`, patterns included (at least one of them). A tenant **never falls back** to the global routes: a charger with no match in its tenant is rejected.
 - `hostnames` (optional) lists custom domains that select the tenant, e.g. `ocpp.customer-b.example`. A hostname may belong to one tenant only.
 - With `tenants`, the global `default` becomes optional.
 - `trace: false` (optional) keeps the tenant's frames out of the trace archive; see [Choosing what is archived](#choosing-what-is-archived).
