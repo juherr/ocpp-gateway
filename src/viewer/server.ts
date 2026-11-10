@@ -29,6 +29,12 @@ export interface ViewerDeps {
    * authenticated. Unset: `404`.
    */
   events?: ViewerRouteHandler;
+  /**
+   * The experimental page on the Open OCPP Trace viewer, served under
+   * `/next/` (`/next/`, `/next/viewer.js`, `/next/viewer.css`; `/next`
+   * redirects there, as the page's URLs are relative). Unset: `404`.
+   */
+  next?: ViewerAssets;
   /** Failed-authentication limit; default 10 failures per source per minute. */
   authLimits?: AuthFailureLimiterOptions;
 }
@@ -72,6 +78,7 @@ const NOT_FOUND = body(TEXT, "Not Found\n");
 const METHOD_NOT_ALLOWED = body(TEXT, "Method Not Allowed\n");
 const TOO_MANY_REQUESTS = body(TEXT, "Too Many Requests\n");
 const INTERNAL_SERVER_ERROR = body(TEXT, "Internal Server Error\n");
+const PERMANENT_REDIRECT = body(TEXT, "Permanent Redirect\n");
 
 function hasHeader(rawHeaders: readonly string[], name: string): boolean {
   for (let i = 0; i < rawHeaders.length; i += 2) {
@@ -95,6 +102,11 @@ export function startViewer(config: ViewerConfig, deps: ViewerDeps): ViewerServe
     ["/viewer.js", body("text/javascript; charset=utf-8", deps.assets.js)],
     ["/viewer.css", body("text/css; charset=utf-8", deps.assets.css)],
   ]);
+  if (deps.next) {
+    routes.set("/next/", body("text/html; charset=utf-8", deps.next.html));
+    routes.set("/next/viewer.js", body("text/javascript; charset=utf-8", deps.next.js));
+    routes.set("/next/viewer.css", body("text/css; charset=utf-8", deps.next.css));
+  }
 
   const send = (req: IncomingMessage, res: ServerResponse, status: number, content: Body) => {
     res.writeHead(status, {
@@ -144,6 +156,11 @@ export function startViewer(config: ViewerConfig, deps: ViewerDeps): ViewerServe
     const query = url.indexOf("?");
     const path = query === -1 ? url : url.slice(0, query);
     if (path === "/events" && deps.events) return deps.events(req, res);
+    if (path === "/next" && deps.next) {
+      // Relative, so it stays right behind a reverse proxy's base path.
+      res.setHeader("Location", "next/");
+      return send(req, res, 308, PERMANENT_REDIRECT);
+    }
     const content = routes.get(path);
     if (!content) return send(req, res, 404, NOT_FOUND);
     send(req, res, 200, content);

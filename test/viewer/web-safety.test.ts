@@ -71,3 +71,43 @@ describe("viewer page sources", () => {
     expect(html).toContain('<link rel="stylesheet" href="/viewer.css" />');
   });
 });
+
+/** The experimental page on the Open OCPP Trace viewer, served under `/next/`. */
+const NEXT = join(__dirname, "..", "..", "web", "viewer-next");
+const nextFiles = readdirSync(NEXT, { recursive: true, encoding: "utf8" }).filter((name) =>
+  /\.(ts|html|css)$/.test(name),
+);
+
+describe("experimental page sources", () => {
+  it("are found", () => {
+    expect(nextFiles).toEqual(
+      expect.arrayContaining(["app.ts", "feed.ts", "mapping.ts", "index.html", "viewer.css"]),
+    );
+  });
+
+  it.each(nextFiles)("%s uses no HTML or code sink", (name) => {
+    const source = readFileSync(join(NEXT, name), "utf8");
+    for (const [label, pattern] of FORBIDDEN) {
+      expect(pattern.test(source), `${name} uses ${label}`).toBe(false);
+    }
+  });
+
+  it("index.html has no inline script, style nor handler, and loads its assets relatively", () => {
+    const html = readFileSync(join(NEXT, "index.html"), "utf8");
+    expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/i);
+    expect(html).not.toMatch(/<style\b/i);
+    expect(html).not.toMatch(/\sstyle\s*=/i);
+    expect(html).not.toMatch(/\son[a-z]+\s*=/i);
+    expect(html).not.toMatch(/javascript:/i);
+    expect(html).not.toMatch(/(src|href)="(https?:)?\/\//i);
+    // Relative, so the page works under a reverse proxy's base path.
+    expect(html).toContain('<script src="viewer.js" defer></script>');
+    expect(html).toContain('<link rel="stylesheet" href="viewer.css" />');
+    expect(html).not.toMatch(/(src|href)="\//i);
+  });
+
+  it("app.ts reads the stream relatively, from the page's parent", () => {
+    const app = readFileSync(join(NEXT, "app.ts"), "utf8");
+    expect(app).toMatch(/url:\s*"\.\.\/events"/);
+  });
+});
