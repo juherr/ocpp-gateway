@@ -526,7 +526,7 @@ Open `http://127.0.0.1:9001/` (or wherever the viewer is exposed) and enter the 
 
 ### Experimental page: the Open OCPP Trace viewer
 
-`http://127.0.0.1:9001/next/` (same credentials, same security headers; `/next` redirects there) shows the same live stream in the [Open OCPP Trace viewer](https://github.com/open-ocpp-trace/viewer) (`@open-ocpp-trace/viewer-standalone`, bundled into the page), beside the page above, which stays the default. It is a feasibility preview ahead of that viewer's first release, and may change or go away.
+`http://127.0.0.1:9001/next/` (same credentials, same security headers; `/next` redirects there) shows the same live stream in the [Open OCPP Trace viewer](https://github.com/open-ocpp-trace/viewer) (`@open-ocpp-trace/viewer-standalone`, bundled into the page), beside the page above, which stays the default. It is experimental, and may change or go away.
 
 - The transport, reconnection and event decoding are the page above's; each `trace` event becomes a viewer entry whose record is the gateway's record, untouched, with the tenant, charge point, session (also the correlation scope), source and deliveries as metadata. A frame Open OCPP Trace cannot represent is an *unparsed* entry. `delivery` events update the entry in place, forward only (an older or unknown update is ignored). A `gap` event, an interruption and a gateway restart each add a gap entry.
 - The viewer brings its own list, detail, filters (including delivery status), pause and JSON Lines export of the selection or of the filtered records (after the same raw-data warning). The counters above it show what the page received, listed, removed from its buffer, dropped while paused or ignored.

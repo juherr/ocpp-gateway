@@ -113,8 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   records untouched, delivery updates applied in place, gaps for dropped
   events, interruptions and gateway restarts, and the viewer's own filters,
   pause and JSON Lines export. Same authentication and security headers;
-  relative URLs, so it works under a reverse proxy's base path. A preview
-  ahead of that viewer's first release.
+  relative URLs, so it works under a reverse proxy's base path. Built on
+  the viewer's 0.1.0 release.
 
 ### Changed
 
