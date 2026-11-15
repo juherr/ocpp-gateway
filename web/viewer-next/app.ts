@@ -14,7 +14,14 @@ import {
   mount,
   type ViewerInstance,
 } from "@open-ocpp-trace/viewer-standalone";
-import { type ConnectionState, exportFilename } from "../viewer/model";
+import { saveJsonl } from "../viewer/download";
+import {
+  type ConnectionState,
+  connectionMessage,
+  EXPORT_WARNING,
+  exportFilename,
+  STATE_LABELS,
+} from "../viewer/model";
 import { startLiveStream } from "../viewer/stream";
 import { createGatewayFeed } from "./feed";
 
@@ -41,17 +48,6 @@ const COUNTERS = {
   skipped: byId("count-skipped"),
 };
 
-const STATE_LABELS: Record<ConnectionState, string> = {
-  connecting: "Connecting…",
-  connected: "Live",
-  disconnected: "Disconnected",
-  reconnecting: "Reconnecting…",
-  "auth-failed": "Authentication failed",
-};
-
-const EXPORT_WARNING =
-  "This file contains raw, unmasked OCPP data: RFID tags, authorization tokens, transaction ids and possibly personal data. Keep it private.";
-
 function showNotice(text: string | undefined): void {
   notice.hidden = text === undefined;
   notice.textContent = text ?? "";
@@ -60,16 +56,9 @@ function showNotice(text: string | undefined): void {
 function showState(state: ConnectionState, retryInMs?: number): void {
   connection.dataset["state"] = state;
   connection.textContent = STATE_LABELS[state];
-  if (state === "disconnected") {
-    const retry = retryInMs === undefined ? "" : `; retrying in ${Math.ceil(retryInMs / 1000)} s`;
-    showNotice(`The live stream is down${retry}. Messages already shown stay available.`);
-  } else if (state === "auth-failed") {
-    showNotice(
-      "Authentication failed: reload the page to enter your credentials again. Messages already shown stay available.",
-    );
-  } else if (state === "connected") {
-    showNotice(undefined);
-  }
+  // The notice also carries export and buffer messages: only a live stream clears it.
+  const message = connectionMessage(state, retryInMs);
+  if (message !== undefined || state === "connected") showNotice(message);
 }
 
 /** Saves the export the user asked for, after the raw-data warning; frames and gaps are never in it. */
@@ -81,18 +70,11 @@ function download(exported: JsonlExport, scope: ExportScope): void {
   if (!window.confirm(`${EXPORT_WARNING}\n\nExport ${exported.recordCount} trace records?`)) {
     return;
   }
-  const url = URL.createObjectURL(new Blob([exported.text], { type: "application/x-ndjson" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = exportFilename("trace", new Date());
-  link.hidden = true;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const filename = exportFilename("trace", new Date());
+  saveJsonl([exported.text], filename);
   const { unparsed, gap, invalid } = exported.skipped;
   showNotice(
-    `Exported ${exported.recordCount} trace records (${scope}) to ${link.download}; left out ` +
+    `Exported ${exported.recordCount} trace records (${scope}) to ${filename}; left out ` +
       `${unparsed} unparsed frames, ${gap} gaps and ${invalid} invalid records.`,
   );
 }

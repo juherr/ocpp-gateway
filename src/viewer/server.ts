@@ -80,6 +80,15 @@ const TOO_MANY_REQUESTS = body(TEXT, "Too Many Requests\n");
 const INTERNAL_SERVER_ERROR = body(TEXT, "Internal Server Error\n");
 const PERMANENT_REDIRECT = body(TEXT, "Permanent Redirect\n");
 
+/** The routes of a page served at `dir` (ending with `/`): its HTML, script and style sheet. */
+function pageRoutes(dir: string, assets: ViewerAssets): [string, Body][] {
+  return [
+    [dir, body("text/html; charset=utf-8", assets.html)],
+    [`${dir}viewer.js`, body("text/javascript; charset=utf-8", assets.js)],
+    [`${dir}viewer.css`, body("text/css; charset=utf-8", assets.css)],
+  ];
+}
+
 function hasHeader(rawHeaders: readonly string[], name: string): boolean {
   for (let i = 0; i < rawHeaders.length; i += 2) {
     if (rawHeaders[i].toLowerCase() === name) return true;
@@ -98,15 +107,9 @@ export function startViewer(config: ViewerConfig, deps: ViewerDeps): ViewerServe
   const credentials = { username: config.username, password: config.password };
   const limiter = new AuthFailureLimiter(deps.authLimits);
   const routes = new Map<string, Body>([
-    ["/", body("text/html; charset=utf-8", deps.assets.html)],
-    ["/viewer.js", body("text/javascript; charset=utf-8", deps.assets.js)],
-    ["/viewer.css", body("text/css; charset=utf-8", deps.assets.css)],
+    ...pageRoutes("/", deps.assets),
+    ...(deps.next ? pageRoutes("/next/", deps.next) : []),
   ]);
-  if (deps.next) {
-    routes.set("/next/", body("text/html; charset=utf-8", deps.next.html));
-    routes.set("/next/viewer.js", body("text/javascript; charset=utf-8", deps.next.js));
-    routes.set("/next/viewer.css", body("text/css; charset=utf-8", deps.next.css));
-  }
 
   const send = (req: IncomingMessage, res: ServerResponse, status: number, content: Body) => {
     res.writeHead(status, {
