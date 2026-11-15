@@ -8,9 +8,11 @@ import {
   type AddResult,
   capturedOf,
   type ConnectionState,
+  connectionMessage,
   type DeliveryStatus,
   EMPTY_FILTER,
   type Entry,
+  EXPORT_WARNING,
   exportFilename,
   type FilterState,
   filterPredicate,
@@ -25,11 +27,13 @@ import {
   RenderQueue,
   shortId,
   sourceLabel,
+  STATE_LABELS,
   type StreamEvent,
   type TraceEntry,
   TraceStore,
   type WireTraceDocument,
 } from "./model";
+import { saveJsonl } from "./download";
 import { type Builder, buildTokens, HIGHLIGHT_MAX_CHARS, jsonTokens } from "./highlight";
 import { startLiveStream } from "./stream";
 
@@ -453,9 +457,6 @@ byId("clear").addEventListener("click", clearList);
 
 // --- Export ---
 
-const EXPORT_WARNING =
-  "This file contains raw, unmasked OCPP data: RFID tags, authorization tokens, transaction ids and possibly personal data. Keep it private.";
-
 function exportJsonl(kind: "trace" | "frame", entries: readonly Entry[], what: string): void {
   const count = entries.reduce(
     (n, e) => n + (e.kind === "trace" && e.doc.kind === kind ? 1 : 0),
@@ -475,18 +476,10 @@ function exportJsonl(kind: "trace" | "frame", entries: readonly Entry[], what: s
     ui.actionStatus.textContent = `Nothing exported: ${invalid}.`;
     return;
   }
-  const blob = new Blob(lines, { type: "application/x-ndjson" });
-  const url = URL.createObjectURL(blob);
-  const link = el("a");
-  link.href = url;
-  link.download = exportFilename(kind, new Date());
-  link.hidden = true;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const filename = exportFilename(kind, new Date());
+  saveJsonl(lines, filename);
   ui.actionStatus.textContent =
-    `Exported ${lines.length.toLocaleString("en")} ${what} to ${link.download}.` +
+    `Exported ${lines.length.toLocaleString("en")} ${what} to ${filename}.` +
     (skipped > 0 ? ` Skipped ${invalid}.` : "");
 }
 
@@ -829,24 +822,10 @@ function copyButton(label: string, value: () => string, status: HTMLElement): HT
 
 // --- Connection state ---
 
-const STATE_LABELS: Record<ConnectionState, string> = {
-  connecting: "Connecting…",
-  connected: "Live",
-  disconnected: "Disconnected",
-  reconnecting: "Reconnecting…",
-  "auth-failed": "Authentication failed",
-};
-
 function showState(state: ConnectionState, retryInMs?: number): void {
   ui.connection.textContent = STATE_LABELS[state];
   ui.connection.className = `badge badge-${state}`;
-  let message: string | undefined;
-  if (state === "disconnected") {
-    message = `The live stream is down${retryInMs === undefined ? "" : `; retrying in ${Math.ceil(retryInMs / 1000)} s`}. Messages already shown stay available.`;
-  } else if (state === "auth-failed") {
-    message =
-      "Authentication failed: reload the page to enter your credentials again. Messages already shown stay available.";
-  }
+  const message = connectionMessage(state, retryInMs);
   ui.connectionMessage.hidden = message === undefined;
   ui.connectionMessage.textContent = message ?? "";
 }

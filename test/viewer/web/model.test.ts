@@ -3,6 +3,7 @@ import {
   BACKOFF_BASE_MS,
   BACKOFF_MAX_MS,
   ConnectionMachine,
+  connectionMessage,
   decodeEvent,
   formatClock,
   MAX_BUFFERED_BYTES,
@@ -654,5 +655,26 @@ describe("RenderQueue", () => {
     rendered.add(gap.key);
     queue.upsert(gap);
     expect(queue.take()).toEqual({ added: [], changed: [gap], removed: [] });
+  });
+});
+
+describe("connectionMessage", () => {
+  it("says the stream is down, with the retry delay in whole seconds when known", () => {
+    expect(connectionMessage("disconnected", 1200)).toBe(
+      "The live stream is down; retrying in 2 s. Messages already shown stay available.",
+    );
+    expect(connectionMessage("disconnected")).toBe(
+      "The live stream is down. Messages already shown stay available.",
+    );
+  });
+
+  it("asks for a reload after an authentication failure", () => {
+    expect(connectionMessage("auth-failed")).toMatch(/^Authentication failed: reload the page/);
+  });
+
+  it("has nothing to say while connecting, reconnecting or live", () => {
+    for (const state of ["connecting", "reconnecting", "connected"] as const) {
+      expect(connectionMessage(state)).toBeUndefined();
+    }
   });
 });

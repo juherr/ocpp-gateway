@@ -887,6 +887,10 @@ export function exportFilename(kind: "trace" | "frame", at: Date): string {
   return `${prefix}-${at.toISOString().replace(/:/g, "-")}.jsonl`;
 }
 
+/** Asked before every export. */
+export const EXPORT_WARNING =
+  "This file contains raw, unmasked OCPP data: RFID tags, authorization tokens, transaction ids and possibly personal data. Keep it private.";
+
 // --- What the next render must do ---
 
 export interface RenderBatch {
@@ -956,6 +960,26 @@ export type ConnectionState =
   | "disconnected"
   | "reconnecting"
   | "auth-failed";
+
+export const STATE_LABELS: Readonly<Record<ConnectionState, string>> = {
+  connecting: "Connecting…",
+  connected: "Live",
+  disconnected: "Disconnected",
+  reconnecting: "Reconnecting…",
+  "auth-failed": "Authentication failed",
+};
+
+/** What the page says about a lost or refused stream; `undefined` for the other states. */
+export function connectionMessage(state: ConnectionState, retryInMs?: number): string | undefined {
+  if (state === "disconnected") {
+    const retry = retryInMs === undefined ? "" : `; retrying in ${Math.ceil(retryInMs / 1000)} s`;
+    return `The live stream is down${retry}. Messages already shown stay available.`;
+  }
+  if (state === "auth-failed") {
+    return "Authentication failed: reload the page to enter your credentials again. Messages already shown stay available.";
+  }
+  return undefined;
+}
 
 /** Why a stream attempt ended. */
 export type Failure =

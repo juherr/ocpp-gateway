@@ -51,5 +51,22 @@ export default defineConfig({
       deps: { onlyBundle: ["prismjs", /^@open-ocpp-trace\//] },
       copy: ["web/viewer/index.html", "web/viewer/viewer.css"],
     },
+    // The experimental page on the Open OCPP Trace standalone viewer, served
+    // under /next/ (dist/viewer-next/), built like the page above. The viewer
+    // package is self-contained (React included).
+    {
+      entry: { viewer: "web/viewer-next/app.ts" },
+      format: ["iife"],
+      platform: "browser",
+      target: "es2022",
+      tsconfig: "tsconfig.web.json",
+      outDir: "dist/viewer-next",
+      outputOptions: { entryFileNames: "[name].js" },
+      minify: true,
+      sourcemap: false,
+      dts: false,
+      deps: { onlyBundle: [/^@open-ocpp-trace\//] },
+      copy: ["web/viewer-next/index.html", "web/viewer-next/viewer.css"],
+    },
   ],
 });
