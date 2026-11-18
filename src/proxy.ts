@@ -191,6 +191,7 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
       },
       sinks,
       () => lease.primaryOpened(),
+      config.chargerPingIntervalMs,
     );
     leases.set(conn, lease);
     sessions.add(key, authHeader, conn);
@@ -212,6 +213,7 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
       maxPendingSessions: config.maxPendingSessions,
       maxSessionsPerSource: config.maxSessionsPerSource,
       clientIpHeader: config.clientIpHeader ?? "none (socket address)",
+      chargerPingIntervalMs: config.chargerPingIntervalMs ?? 0,
       traceArchiving: options.traceSink !== undefined,
       ...(options.traceSink && { untraced: routes.untracedScopes() }),
       liveViewer: options.liveSink !== undefined,

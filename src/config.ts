@@ -29,6 +29,9 @@ const MAX_MESSAGE_BYTES_UPPER_BOUND = 2 ** 31 - 1;
  */
 const TRACE_MAX_MESSAGE_BYTES = 15 * 1024 * 1024;
 
+/** Largest `CHARGER_PING_INTERVAL`, in seconds. */
+const MAX_CHARGER_PING_INTERVAL_SECONDS = 3600;
+
 const DEFAULT_TRACE_DATABASE = "ocpp_gateway";
 const DEFAULT_TRACE_RETENTION_DAYS = 30;
 const DEFAULT_TRACE_QUEUE_MAX = 10_000;
@@ -111,6 +114,12 @@ export interface Config {
    * the socket's remote address is used.
    */
   clientIpHeader?: string;
+  /**
+   * Interval between the WebSocket pings the gateway sends each charge point,
+   * so idle proxies in front of it keep the connection open; a charger silent
+   * for 3 intervals is disconnected. 0 or unset: no ping.
+   */
+  chargerPingIntervalMs?: number;
   /** Trace archiving to MongoDB. Unset: disabled. */
   trace?: TraceConfig;
   /** Error reporting to Sentry. Unset: disabled. */
@@ -276,6 +285,9 @@ export function loadConfig(): Config {
   const maxPendingSessions = parseEnv("MAX_PENDING_SESSIONS", parseOptionalPositiveInteger);
   const maxSessionsPerSource = parseEnv("MAX_SESSIONS_PER_SOURCE", parseOptionalPositiveInteger);
   const clientIpHeader = parseEnv("CLIENT_IP_HEADER", parseOptionalHeaderName);
+  const chargerPingIntervalSeconds = parseEnv("CHARGER_PING_INTERVAL", (value) =>
+    parseOptionalIntegerInRange(value, 0, 0, MAX_CHARGER_PING_INTERVAL_SECONDS),
+  );
 
   return {
     port,
@@ -292,6 +304,7 @@ export function loadConfig(): Config {
     maxPendingSessions,
     maxSessionsPerSource,
     clientIpHeader,
+    chargerPingIntervalMs: chargerPingIntervalSeconds * 1000,
     trace: loadTraceConfig(maxMessageBytes),
     sentry: loadSentryConfig(),
     viewer: loadViewerConfig(port),

@@ -23,6 +23,9 @@ interface MockSocket {
   callbacks: ((error?: Error) => void)[];
   /** When set, `send` throws it. */
   sendError: Error | null;
+  /** Payloads of the pings and pongs sent on this socket, in order. */
+  pings: Buffer[];
+  pongs: Buffer[];
   emit(event: string, ...args: unknown[]): boolean;
 }
 
@@ -75,11 +78,18 @@ vi.mock("ws", async () => {
       closeCodes.push(code);
       this.readyState = MockWebSocket.CLOSED;
     }
-    ping() {
-      return undefined;
+    pings: Buffer[] = [];
+    pongs: Buffer[] = [];
+    ping(data?: Buffer) {
+      this.pings.push(data ?? Buffer.alloc(0));
     }
-    pong() {
-      return undefined;
+    pong(data?: Buffer) {
+      this.pongs.push(data ?? Buffer.alloc(0));
+    }
+    /** Like the real ws: no close handshake, a 1006 close once the socket is destroyed. */
+    terminate() {
+      this.readyState = MockWebSocket.CLOSED;
+      this.emit("close", 1006, Buffer.from(""));
     }
   }
 
@@ -807,5 +817,120 @@ describe("ChargerConnection lifecycle hooks", () => {
     await Promise.resolve();
 
     expect(hooks).toEqual({ ended: 1, primaryOpened: 0 });
+  });
+});
+
+describe("ChargerConnection charger keepalive", () => {
+  const INTERVAL_MS = 1000;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    return () => vi.useRealTimers();
+  });
+
+  /** A session pinging its charger every `intervalMs` (0: off), its primary open. */
+  function startPingedSession(intervalMs = INTERVAL_MS) {
+    const hooks = { ended: 0 };
+    const charger = createMockChargerSocket() as unknown as MockSocket;
+    new ChargerConnection(
+      charger as unknown as WebSocket,
+      { tenantId: null, chargeBoxId: "cp-abc" },
+      { primary: { url: "ws://csms.example/ocpp", appendChargeBoxId: true }, secondaries: [] },
+      "ocpp1.6",
+      undefined,
+      MAX_PAYLOAD,
+      () => (hooks.ended += 1),
+      [],
+      undefined,
+      intervalMs,
+    );
+    const [primary] = outbound;
+    primary.emit("open");
+    return { hooks, charger, primary };
+  }
+
+  it("never pings the charger when the option is off", () => {
+    const { charger } = startPingedSession(0);
+    vi.advanceTimersByTime(60 * 60 * 1000);
+
+    expect(charger.pings).toEqual([]);
+  });
+
+  it("pings the charger every interval with the same session token", () => {
+    const { charger } = startPingedSession();
+    vi.advanceTimersByTime(INTERVAL_MS - 1);
+    expect(charger.pings).toEqual([]);
+
+    vi.advanceTimersByTime(1);
+    charger.emit("pong", charger.pings[0]);
+    vi.advanceTimersByTime(INTERVAL_MS);
+
+    expect(charger.pings).toHaveLength(2);
+    expect(charger.pings[0].length).toBeGreaterThan(0);
+    expect(charger.pings[1]).toEqual(charger.pings[0]);
+  });
+
+  it("keeps the charger's answers to its pings from the primary, forwarding other pongs", () => {
+    const { charger, primary } = startPingedSession();
+    vi.advanceTimersByTime(INTERVAL_MS);
+    const [token] = charger.pings;
+
+    charger.emit("pong", token);
+    const other = Buffer.from("from-csms");
+    charger.emit("pong", other);
+
+    expect(primary.pongs).toEqual([other]);
+  });
+
+  it("still forwards the primary's pings and the charger's pings", () => {
+    const { charger, primary } = startPingedSession();
+    primary.emit("ping", Buffer.from("csms-ping"));
+    charger.emit("ping", Buffer.from("cp-ping"));
+
+    expect(charger.pings).toEqual([Buffer.from("csms-ping")]);
+    expect(primary.pings).toEqual([Buffer.from("cp-ping")]);
+  });
+
+  it("ends the session when the charger sends nothing for 3 intervals", () => {
+    const warnings = captureWarnings();
+    const { hooks, charger } = startPingedSession();
+
+    vi.advanceTimersByTime(3 * INTERVAL_MS);
+    expect(hooks.ended).toBe(0);
+
+    vi.advanceTimersByTime(INTERVAL_MS);
+    expect(charger.readyState).toBe(WebSocket.CLOSED);
+    expect(hooks.ended).toBe(1);
+    // The primary is closed normally; the dead charger socket is not waited on.
+    expect(closeCodes).toEqual([1000]);
+    expect(messagesOf(warnings)).toContain("charger pong timeout, closing the session");
+  });
+
+  it.each([
+    { frame: "a message", send: (cp: MockSocket) => cp.emit("message", Buffer.from("m")) },
+    { frame: "a ping", send: (cp: MockSocket) => cp.emit("ping", Buffer.from("p")) },
+    { frame: "an unrelated pong", send: (cp: MockSocket) => cp.emit("pong", Buffer.from("x")) },
+    { frame: "the answer to a ping", send: (cp: MockSocket) => cp.emit("pong", cp.pings.at(-1)) },
+  ])("counts $frame from the charger as a sign of life", ({ send }) => {
+    const { hooks, charger } = startPingedSession();
+
+    for (let i = 0; i < 10; i++) {
+      vi.advanceTimersByTime(INTERVAL_MS);
+      send(charger);
+    }
+
+    expect(hooks.ended).toBe(0);
+    expect(charger.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it("stops pinging once the session has ended", () => {
+    const { charger } = startPingedSession();
+    vi.advanceTimersByTime(INTERVAL_MS);
+    charger.emit("close", 1000, Buffer.from(""));
+    // The mock's close() leaves no socket open; keep it open to see a stray ping.
+    charger.readyState = WebSocket.OPEN;
+
+    vi.advanceTimersByTime(10 * INTERVAL_MS);
+    expect(charger.pings).toHaveLength(1);
   });
 });

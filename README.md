@@ -43,6 +43,17 @@ Because charger sessions can stay open for days or weeks, secondaries get a few 
 
 Messages a charger sends while the gateway is still connecting to its **primary** (usually the `BootNotification` right after the handshake) are buffered within the same bounds and delivered in order once the link is open. If the **primary** disconnects, the charger connection is closed (a charger expects exactly one controlling CSMS). A secondary failure never affects the charger or the primary link.
 
+### Charger keepalive (optional)
+
+The gateway does not ping the charge point by default: the charger-side connection carries traffic only when the charge point or its primary CSMS sends something. Behind a proxy that closes idle WebSocket connections (behind Cloudflare, an idle charge point was measured being cut every ~125 s), a quiet charge point is disconnected again and again, and each reconnection is a new handshake to the CSMS. The charge point's own OCPP 1.6 `WebSocketPingInterval` key avoids it (60 s fixed the cut measured above), but not every charge point supports it, and its operator may not be able to set it.
+
+Set `CHARGER_PING_INTERVAL` (seconds, below the proxy's idle timeout, e.g. `60`) to have the gateway send a WebSocket ping to each charge point at that interval:
+
+- **Not OCPP** — ping and pong frames are neither archived nor shown in the viewer, and the charge point's answers to the gateway's pings never reach the CSMS. Pings and pongs between the charge point and its primary are still forwarded end to end.
+- **Dead charge points** — a charge point that sends nothing at all (no message, ping or pong) for 3 intervals is disconnected (checked at each ping, so after 3 to 4 intervals) and its session ends, closing the primary link, instead of holding it open on a dead socket.
+
+`0`, the default, sends no ping: nothing changes on the wire. WebSocket peers must answer pings, but a charge point whose stack does not, and that is otherwise quiet (a long heartbeat), would now be disconnected every 3 to 4 intervals: after turning the option on, watch the logs for `charger pong timeout, closing the session`.
+
 ## Routing configuration
 
 Routing is driven by a JSON file (path from `ROUTES_FILE`, default `./routes.json`). The gateway **fails to start** if the file is missing or invalid.
@@ -242,6 +253,7 @@ All configuration is done through environment variables:
 | `MAX_PENDING_SESSIONS`         | No       | — (unlimited)   | Sessions whose primary CSMS link is still connecting; more are closed with `1013` |
 | `MAX_SESSIONS_PER_SOURCE`      | No       | — (unlimited)   | Live charger sessions per client source (IP address); more are closed with `1013` |
 | `CLIENT_IP_HEADER`             | No       | — (socket address) | Header holding the client's IP address, set by a **trusted** reverse proxy (e.g. `cf-connecting-ip`, `x-real-ip`). A connection without exactly one value that is a bare IP address is closed with `1008` |
+| `CHARGER_PING_INTERVAL`        | No       | `0` (off)       | Seconds between the WebSocket pings the gateway sends each charge point (`0`–`3600`), so idle proxies keep the connection open; a charge point silent for 3 intervals is disconnected. See [Charger keepalive](#charger-keepalive-optional) |
 | `TRACE_ENABLED`                | No       | `false`         | Archive every OCPP frame in MongoDB. See [Trace archiving](#trace-archiving-optional) |
 | `TRACE_MONGODB_URI`            | With `TRACE_ENABLED` | —   | `mongodb://` or `mongodb+srv://` connection string. May carry credentials; never logged |
 | `TRACE_MONGODB_DATABASE`       | No       | `ocpp_gateway`  | Database holding the `ocpp_traces` collection                                       |

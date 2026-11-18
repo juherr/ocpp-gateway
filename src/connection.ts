@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import { createLogger } from "./logger";
 import { type Route, buildTargetUrl } from "./routes";
@@ -41,6 +41,8 @@ import { forwardPing, forwardPong, isUtf8Data, rawDataToString } from "./utils/w
 export const SECONDARY_RECONNECT_DELAY_MS = 10_000;
 const SECONDARY_KEEPALIVE_INTERVAL_MS = 30_000;
 const SECONDARY_PONG_TIMEOUT_MS = 90_000;
+/** Pinged intervals without any frame from the charger before its session is closed. */
+const CHARGER_PONG_TIMEOUT_INTERVALS = 3;
 /** Messages buffered per upstream link while it is not open; oldest dropped first. */
 export const UPSTREAM_MAX_QUEUE = 100;
 /**
@@ -77,6 +79,11 @@ export class ChargerConnection {
   private secondaries: SecondaryState[] = [];
   private tracer: SessionTracer | undefined;
   private alive = true;
+  /** Pings the charger while the session is open; null when the option is off. */
+  private chargerKeepalive: ReturnType<typeof setInterval> | null = null;
+  /** Payload of the gateway's own pings, so their pongs never reach the primary. */
+  private chargerPingToken: Buffer | null = null;
+  private chargerLastSeenAt = Date.now();
 
   constructor(
     private readonly charger: WebSocket,
@@ -90,6 +97,8 @@ export class ChargerConnection {
     private readonly traceSinks: readonly TraceSink[] = [],
     /** Called once the primary link opens: the session is no longer pending. */
     private readonly onPrimaryOpen?: () => void,
+    /** Interval between the gateway's pings to the charger; 0: never pinged. */
+    private readonly chargerPingIntervalMs = 0,
   ) {
     // Tag logs with the tenant too: two tenants may share a chargeBoxId.
     this.log = createLogger(formatSessionKey(key));
@@ -155,6 +164,7 @@ export class ChargerConnection {
     }
 
     this.charger.on("message", (data, isBinary) => {
+      this.chargerLastSeenAt = Date.now();
       const raw = rawDataToString(data);
       this.log.debugOcppFrame("charger → proxy", raw);
       // A response answers a CALL from the primary: secondaries never asked.
@@ -215,10 +225,14 @@ export class ChargerConnection {
     });
 
     this.charger.on("ping", (data) => {
+      this.chargerLastSeenAt = Date.now();
       forwardPing(this.primary, data);
     });
 
     this.charger.on("pong", (data) => {
+      this.chargerLastSeenAt = Date.now();
+      // The answer to the gateway's own ping: the primary never asked for it.
+      if (this.chargerPingToken?.equals(data)) return;
       forwardPong(this.primary, data);
     });
 
@@ -227,6 +241,47 @@ export class ChargerConnection {
       secondaries: this.secondaries.map((secondary) => secondary.logUrl),
       protocol: this.protocol,
     });
+
+    if (this.chargerPingIntervalMs > 0) this.startChargerKeepalive();
+  }
+
+  /**
+   * Ping the charger every `chargerPingIntervalMs`, so that idle proxies in
+   * front of the gateway keep its connection open, and close the session once
+   * the charger has sent nothing for `CHARGER_PONG_TIMEOUT_INTERVALS`
+   * intervals: a dead socket must not keep the primary open. Any frame counts
+   * as a sign of life, not only the pong: some stacks do not echo the payload.
+   *
+   * RFC 6455 §5.5.3 lets a peer answer only the latest of several pings, so a
+   * primary ping crossing the gateway's may go unanswered; the primary's next
+   * one is.
+   */
+  private startChargerKeepalive() {
+    const token = randomBytes(8);
+    this.chargerPingToken = token;
+    const timeoutMs = CHARGER_PONG_TIMEOUT_INTERVALS * this.chargerPingIntervalMs;
+    this.chargerLastSeenAt = Date.now();
+    this.chargerKeepalive = setInterval(() => {
+      if (this.charger.readyState !== WebSocket.OPEN) return;
+
+      if (Date.now() - this.chargerLastSeenAt > timeoutMs) {
+        this.log.warn("charger pong timeout, closing the session", { timeoutMs });
+        try {
+          // No close handshake: a dead peer would never complete it.
+          this.charger.terminate();
+        } catch {
+          /* best-effort */
+        }
+        this.teardown();
+        return;
+      }
+
+      try {
+        this.charger.ping(token);
+      } catch {
+        /* best-effort */
+      }
+    }, this.chargerPingIntervalMs);
   }
 
   /**
@@ -454,6 +509,10 @@ export class ChargerConnection {
   teardown() {
     if (!this.alive) return;
     this.alive = false;
+    if (this.chargerKeepalive !== null) {
+      clearInterval(this.chargerKeepalive);
+      this.chargerKeepalive = null;
+    }
     dropAll(this.primaryQueue);
 
     for (const sec of this.secondaries) {

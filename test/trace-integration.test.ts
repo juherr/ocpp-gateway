@@ -123,6 +123,26 @@ describe("trace archiving through the gateway", () => {
     expectConforming(sink.docs, ["csms-main"]);
   });
 
+  it("never archives the gateway's keepalive pings to the charger, nor their pongs", async () => {
+    const [primary] = await csmsFor(answering("primary"));
+    const sink = new MemoryTraceSink();
+    const { port } = await start(
+      routes(primary),
+      { traceSink: sink },
+      { chargerPingIntervalMs: 50 },
+    );
+    const { charger } = await connect(port);
+    let pings = 0;
+    charger.on("ping", () => (pings += 1));
+
+    await waitFor(() => pings >= 3);
+    charger.send(boot("m1"));
+    await waitFor(() => sink.docs.length === 2 && sink.docs.every(settled));
+
+    // Only the OCPP exchange, however many ping/pong cycles ran around it.
+    expect(sink.docs.map((doc) => traceOf(doc)?.messageType)).toEqual(["CALL", "CALLRESULT"]);
+  });
+
   it("archives a frame mirrored to secondaries once, and every secondary response as ignored", async () => {
     const [primary, mirror1, mirror2] = await csmsFor(
       answering("primary"),

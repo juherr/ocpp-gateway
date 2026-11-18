@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional keepalive ping from the gateway to each charge point:
+  `CHARGER_PING_INTERVAL` (seconds) keeps an idle charge point connected
+  behind a proxy that closes idle WebSocket connections, such as Cloudflare,
+  when the charge point cannot set its own `WebSocketPingInterval`. A charge
+  point that sends nothing for 3 intervals is disconnected. The pings are not
+  archived nor shown in the viewer, and their pongs never reach the CSMS. Off
+  by default, as before.
 - Prefix patterns in the routes file: a `chargers` key ending with `*`, such
   as `"ACME-*"`, routes every chargeBoxId starting with `ACME-`, so a family of
   charge points no longer has to be listed one by one. An exact chargeBoxId
