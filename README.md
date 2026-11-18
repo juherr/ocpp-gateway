@@ -31,7 +31,7 @@ For each charge point the gateway resolves a **route** (one primary + N secondar
 | Charger → CSMS | ✅ Forwarded | ✅ Mirrored         |
 | CSMS → Charger | ✅ Forwarded | ❌ Ignored          |
 
-The **primary CSMS** has full control — it can send commands like `RemoteStartTransaction` back to the charger. **Secondary** backends receive a read-only copy of the charger's messages; their responses are never sent back to the charger. Secondary connections are best-effort — if one fails, it never affects the charger or the primary link.
+The **primary CSMS** has full control — it can send commands like `RemoteStartTransaction` back to the charger. **Secondary** backends receive a read-only copy of the charger's messages; their responses are never sent back to the charger. The charger's own responses (`CALLRESULT`, `CALLERROR`) answer the primary's commands, so they go to the primary only: a secondary never receives an answer to a request it did not send. Secondary connections are best-effort — if one fails, it never affects the charger or the primary link.
 
 ### Secondary reliability
 

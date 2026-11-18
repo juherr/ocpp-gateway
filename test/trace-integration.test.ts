@@ -202,10 +202,8 @@ describe("trace archiving through the gateway", () => {
       id: "csms-main",
       role: "primary",
     });
-    expect(answer.deliveries.map((d) => [d.target, d.status])).toEqual([
-      ["csms-main", "written"],
-      ["mirror-1", "written"],
-    ]);
+    // The answer is for the primary's CALL: the primary is its only destination.
+    expect(answer.deliveries.map((d) => [d.target, d.status])).toEqual([["csms-main", "written"]]);
     expect(traceOf(answer)?.meta.gateway.correlation).toEqual({
       callTraceId: reset.id,
       action: "Reset",
