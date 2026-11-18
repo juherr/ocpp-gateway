@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Claude Code specifics
 
-- **Verification before "done":** run `npm run lint && npm run typecheck && npm run build && npm test` and confirm they pass before claiming a change works or committing.
+- **Verification before "done":** run `npm run format` first (`npm run lint` fails on formatting the pre-commit hook would fix anyway), then `npm run lint && npm run typecheck && npm run build && npm test` and confirm they pass before claiming a change works or committing.
 - **Fresh worktree:** it has no `node_modules` — run `GITHUB_TOKEN=$(gh auth token) npm ci` before any gate (the Open OCPP Trace SDK comes from GitHub Packages, see `AGENTS.md`; the gh token needs the `read:packages` scope).
 - **Lint baseline:** zero warnings — CI annotates any new one on the PR.
 - **Tests are not type-checked:** `tsconfig.json` only includes `src/`, so type errors in `test/` surface at runtime only.
