@@ -16,6 +16,7 @@ describe("loadConfig", () => {
     "MAX_PENDING_SESSIONS",
     "MAX_SESSIONS_PER_SOURCE",
     "CLIENT_IP_HEADER",
+    "CHARGER_PING_INTERVAL",
     "TRACE_ENABLED",
     "TRACE_MONGODB_URI",
     "TRACE_MONGODB_DATABASE",
@@ -59,6 +60,7 @@ describe("loadConfig", () => {
     expect(config.maxPendingSessions).toBeUndefined();
     expect(config.maxSessionsPerSource).toBeUndefined();
     expect(config.clientIpHeader).toBeUndefined();
+    expect(config.chargerPingIntervalMs).toBe(0);
     expect(config.trace).toBeUndefined();
     expect(config.sentry).toBeUndefined();
     expect(config.viewer).toBeUndefined();
@@ -111,6 +113,18 @@ describe("loadConfig", () => {
     vi.stubEnv("MAX_MESSAGE_BYTES", "  ");
 
     expect(loadConfig().maxMessageBytes).toBe(1024 * 1024);
+  });
+
+  it.each([
+    { value: "60", expected: 60_000 },
+    { value: " 1 ", expected: 1000 },
+    { value: "3600", expected: 3_600_000 },
+    { value: "0", expected: 0 },
+    { value: "  ", expected: 0 },
+  ])("reads CHARGER_PING_INTERVAL '$value' as $expected ms", ({ value, expected }) => {
+    vi.stubEnv("CHARGER_PING_INTERVAL", value);
+
+    expect(loadConfig().chargerPingIntervalMs).toBe(expected);
   });
 
   it.each(["127.0.0.1", "::1", "localhost", "0.0.0.0"])("reads LISTEN_HOST %s", (value) => {
@@ -236,6 +250,21 @@ describe("loadConfig", () => {
       envName: "MAX_MESSAGE_BYTES",
       value: "2147483648",
       expectedCause: 'Value must be an integer between 1 and 2147483647: "2147483648"',
+    },
+    {
+      envName: "CHARGER_PING_INTERVAL",
+      value: "-1",
+      expectedCause: 'Value must be an integer between 0 and 3600: "-1"',
+    },
+    {
+      envName: "CHARGER_PING_INTERVAL",
+      value: "3601",
+      expectedCause: 'Value must be an integer between 0 and 3600: "3601"',
+    },
+    {
+      envName: "CHARGER_PING_INTERVAL",
+      value: "1.5",
+      expectedCause: 'Invalid integer: "1.5"',
     },
     {
       envName: "MAX_SESSIONS",
