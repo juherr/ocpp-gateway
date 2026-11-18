@@ -142,8 +142,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass the build secret the root Dockerfile now needs.
 - On shutdown, charger sessions are torn down immediately instead of after
   each charger's close handshake, so upstream links close sooner.
-- Runtime dependencies updated: `ws` 8.22.2, `mongodb` 7.8.0 and
-  `@sentry/node` 11.11.0.
+- Runtime dependencies updated: `ws` 8.23.0, `mongodb` 7.9.0 and
+  `@sentry/node` 11.14.0.
 - The Docker image, CI and local development (`mise.toml`) run Node 26, the
   current LTS. Node 24 remains supported (`engines`).
 
@@ -169,6 +169,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A routes file with a JSON syntax error no longer has an excerpt of its
   content quoted in the error (logged, and now reported): it may hold backend
   credentials.
+- `ws` 8.23.0 caps the pongs it sends automatically, so a secondary CSMS
+  that floods pings while not reading can no longer exhaust the gateway's
+  memory.
 
 ## [0.1.0] - 2026-10-06
 
