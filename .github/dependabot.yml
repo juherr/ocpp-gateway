@@ -14,6 +14,15 @@ updates:
     schedule:
       interval: weekly
     groups:
+      # Runtime minor and patch updates in one PR; a runtime major gets its
+      # own PR, since it may need code changes.
+      production-dependencies:
+        dependency-type: production
+        update-types:
+          - minor
+          - patch
+      # Every dev update, majors included: vite-plus pins vitest exactly, so
+      # they have to move together.
       dev-dependencies:
         dependency-type: development
     ignore:
