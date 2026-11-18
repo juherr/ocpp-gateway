@@ -171,7 +171,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credentials.
 - `ws` 8.23.0 caps the pongs it sends automatically, so a secondary CSMS
   that floods pings while not reading can no longer exhaust the gateway's
-  memory.
+  memory: past 60 unsent pongs, the gateway drops that secondary link and
+  reconnects it as after any other failure.
 
 ## [0.1.0] - 2026-10-06
 
