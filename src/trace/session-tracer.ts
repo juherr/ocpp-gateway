@@ -95,6 +95,8 @@ export class SessionTracer {
   private readonly correlator = new Correlator();
   private readonly ocppVersion: string | undefined;
   private readonly chargerRouting: FrameRouting;
+  /** A charger response answers the primary's CALL: it is never mirrored. */
+  private readonly chargerResponseRouting: FrameRouting;
   private readonly primaryRouting: FrameRouting;
   private readonly secondaryRoutings = new Map<string, FrameRouting>();
   private seq = 0;
@@ -118,6 +120,11 @@ export class SessionTracer {
       // The charger only ever answers CALLs it received: the primary's.
       responseConversation: primaryId,
     };
+    this.chargerResponseRouting = {
+      ...this.chargerRouting,
+      destinations: this.chargerRouting.destinations.slice(0, 1),
+      callConversations: [primaryId],
+    };
     this.primaryRouting = {
       direction: "csms-to-cp",
       source: { type: "csms", id: primaryId, role: "primary" },
@@ -127,9 +134,16 @@ export class SessionTracer {
     };
   }
 
-  /** A frame from the charger, routed to the primary then every secondary. */
-  fromCharger(raw: string, encoding: FrameEncoding = "text"): ReceivedFrame {
-    return this.receive(raw, encoding, this.chargerRouting);
+  /**
+   * A frame from the charger, routed to the primary then every secondary; a
+   * response (`mirrored: false`) to the primary only.
+   */
+  fromCharger(raw: string, encoding: FrameEncoding = "text", mirrored = true): ReceivedFrame {
+    return this.receive(
+      raw,
+      encoding,
+      mirrored ? this.chargerRouting : this.chargerResponseRouting,
+    );
   }
 
   /** A frame from the primary CSMS, routed to the charger. */

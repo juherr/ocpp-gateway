@@ -149,6 +149,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Secondaries no longer receive the charger's responses (`CALLRESULT`,
+  `CALLERROR`). Those answer the primary's commands, so a secondary got
+  replies to requests it never sent, logged as protocol errors or matched
+  against an unrelated pending request with the same message id. They now go
+  to the primary only; everything else is still mirrored, including frames
+  the gateway cannot classify. Same fix as
+  [joulo-nl/joulo-ocpp-proxy#51](https://github.com/joulo-nl/joulo-ocpp-proxy/pull/51).
 - A gateway whose port is already taken exits with code 1, instead of
   stopping with code 0 as if it had shut down normally.
 - A connection the gateway refuses (no chargeBoxId, ambiguous host, no route,

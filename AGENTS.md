@@ -88,7 +88,7 @@ The tenant is transport/routing context, never read from or written to OCPP fram
 
 Per charger, the gateway holds one **primary** link and N **secondary** links:
 
-- **Charger → upstream**: every message is forwarded to the primary AND mirrored to all secondaries.
+- **Charger → upstream**: every message is forwarded to the primary AND mirrored to all secondaries, except the charger's responses (`CALLRESULT`/`CALLERROR`, `isOcppResponse` in `utils/ocpp.ts`, type id as a number or a decimal string): they answer the primary's CALLs, so they go to the primary only (traced with the primary as their only destination, `SessionTracer.fromCharger(raw, encoding, mirrored)`, never as a `dropped` delivery). Frames that cannot be classified are still mirrored.
 - **Upstream → charger**: ONLY the primary's responses go back to the charger. Secondary responses are logged and discarded — secondaries are strictly one-way mirrors.
 - **Primary failure tears down the whole session** (chargers expect exactly one CSMS). A **secondary failure must never affect the charger or the primary** — this is a hard rule; all secondary I/O is wrapped best-effort. Connection setup never throws: `new WebSocket()` rejects some URLs synchronously (bad scheme, `#fragment`), so a refused secondary is skipped and a refused primary closes the charger with 1011, like an unreachable one.
 

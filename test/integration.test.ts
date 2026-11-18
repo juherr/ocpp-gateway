@@ -80,6 +80,28 @@ describe("OCPP proxy integration", () => {
     await h.close();
   });
 
+  it("forwards the charger's responses to the primary only, mirroring its CALLs", async () => {
+    const h = await setup((pp, sp) => ({
+      default: { primary: `ws://127.0.0.1:${pp}`, secondaries: [`ws://127.0.0.1:${sp}`] },
+    }));
+
+    const client = new WebSocket(`ws://127.0.0.1:${h.proxyPort}/CP-001`, ["ocpp1.6"]);
+    await once(client, "open");
+
+    const result = JSON.stringify([3, "csms-1", { status: "Accepted" }]);
+    const error = JSON.stringify([4, "csms-2", "NotSupported", "", {}]);
+    const call = boot("msg-1");
+    for (const frame of [result, error, call]) client.send(frame);
+
+    // Frames on one link arrive in order: once the CALL is in, nothing precedes it.
+    await waitFor(() => h.primary.received().length >= 3 && h.secondary.received().length >= 1);
+    expect(h.primary.received()).toEqual([result, error, call]);
+    expect(h.secondary.received()).toEqual([call]);
+
+    client.close();
+    await h.close();
+  });
+
   it("routes an unknown chargeBoxId to the default route (no secondary mirror)", async () => {
     const h = await setup((pp, sp) => ({
       default: { primary: `ws://127.0.0.1:${pp}`, secondaries: [] },

@@ -444,6 +444,50 @@ describe("ChargerConnection secondary failure", () => {
   });
 });
 
+describe("ChargerConnection response mirroring", () => {
+  const MIRROR: Backend = { url: "ws://mirror.example/ocpp", appendChargeBoxId: true };
+  const CALL = JSON.stringify([2, "m1", "Heartbeat", {}]);
+  const RESPONSES = [
+    JSON.stringify([3, "csms-1", { status: "Accepted" }]),
+    JSON.stringify([4, "csms-2", "NotSupported", "", {}]),
+    JSON.stringify(["3", "csms-3", {}]),
+  ];
+
+  it("sends the charger's responses to the primary only, never to a secondary", () => {
+    const { primary, secondary, send } = startSession({ secondaries: [MIRROR] });
+    primary.emit("open");
+    secondary.emit("open");
+
+    for (const response of RESPONSES) send(response);
+    send(CALL);
+
+    expect(primary.sent).toEqual([...RESPONSES, CALL]);
+    expect(secondary.sent).toEqual([CALL]);
+  });
+
+  it("never queues a response for a secondary that is not open", () => {
+    const { primary, secondary, send } = startSession({ secondaries: [MIRROR] });
+    primary.emit("open");
+
+    for (const response of RESPONSES) send(response);
+    send(CALL);
+    secondary.emit("open");
+
+    expect(secondary.sent).toEqual([CALL]);
+  });
+
+  it("still mirrors frames it cannot classify", () => {
+    const { primary, secondary, send } = startSession({ secondaries: [MIRROR] });
+    primary.emit("open");
+    secondary.emit("open");
+
+    const unclassified = ["not json", JSON.stringify([5, "m1", "InternalError", "", {}])];
+    for (const frame of unclassified) send(frame);
+
+    expect(secondary.sent).toEqual(unclassified);
+  });
+});
+
 describe("ChargerConnection trace capture", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -504,6 +548,21 @@ describe("ChargerConnection trace capture", () => {
       ["written", undefined],
       ["failed", "WebSocket is not open: readyState 3 (CLOSED)"],
       ["queued", undefined],
+    ]);
+  });
+
+  it("records the primary as a charger response's only destination", () => {
+    const { sink, primary, mirrors, send } = startTracedSession(2);
+    primary.emit("open");
+    mirrors[0].emit("open");
+    send(JSON.stringify([3, "csms-1", { status: "Accepted" }]));
+
+    // Never a `dropped` delivery per secondary: the response was not lost.
+    expect(sink.docs[0].deliveries.map((d) => [d.target, d.status])).toEqual([
+      ["csms-main", "submitted"],
+    ]);
+    expect(sink.docs[0].kind === "trace" && sink.docs[0].trace.meta.gateway.destinations).toEqual([
+      { target: "csms-main", role: "primary" },
     ]);
   });
 

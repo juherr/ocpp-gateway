@@ -8,6 +8,7 @@ import type { TraceSink } from "./trace/writer";
 import { errorMessage } from "./utils/errors";
 import { OCPP_SUBPROTOCOLS } from "./types";
 import { BoundedQueue } from "./utils/bounded-queue";
+import { isOcppResponse } from "./utils/ocpp";
 import { redactUrl } from "./utils/url";
 import { forwardPing, forwardPong, isUtf8Data, rawDataToString } from "./utils/websocket";
 
@@ -18,7 +19,8 @@ import { forwardPing, forwardPong, isUtf8Data, rawDataToString } from "./utils/w
  *                         ──→  Secondary CSMS (mirror, one-way)
  *
  * - Messages from the charger are forwarded to the primary and mirrored
- *   to all secondaries.
+ *   to all secondaries, except its responses (CALLRESULT, CALLERROR): they
+ *   answer the primary's CALLs and go to the primary only.
  * - Only the primary CSMS can send commands back to the charger.
  * - Every link (charger, primary, secondaries) rejects messages larger than
  *   `maxPayload`: `ws` closes it with 1009 before the message is seen here.
@@ -155,16 +157,18 @@ export class ChargerConnection {
     this.charger.on("message", (data, isBinary) => {
       const raw = rawDataToString(data);
       this.log.debugOcppFrame("charger → proxy", raw);
+      // A response answers a CALL from the primary: secondaries never asked.
+      const mirrored = this.secondaries.length === 0 || !isOcppResponse(raw);
+      const secondaries = mirrored ? this.secondaries : [];
       // Archived once, here at ingress, however many links it goes to.
-      const frame = this.tracer?.fromCharger(raw, encodingOf(data, isBinary));
+      const frame = this.tracer?.fromCharger(raw, encodingOf(data, isBinary), mirrored);
 
       // ws still delivers frames in flight while the charger closes: nothing
       // forwards them once the session has ended.
       if (!this.alive) {
         this.log.warn("session ended, dropping message");
         if (frame) {
-          for (let i = 0; i <= this.secondaries.length; i++)
-            frame.delivery(i).dropped("session-ended");
+          for (let i = 0; i <= secondaries.length; i++) frame.delivery(i).dropped("session-ended");
           frame.commit();
         }
         return;
@@ -181,7 +185,7 @@ export class ChargerConnection {
         primaryDelivery?.dropped("link-not-open");
       }
 
-      this.secondaries.forEach((sec, index) => {
+      secondaries.forEach((sec, index) => {
         const delivery = frame?.delivery(index + 1);
         if (sec.ws?.readyState === WebSocket.OPEN) {
           try {
