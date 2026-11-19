@@ -167,6 +167,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notice. In the trace archive, the message that hit the bound is `dropped`
   with the new reason `link-saturated`. Messages already waiting on the cut
   link are `failed`, as on any link that goes away.
+- `primary disconnected` is logged at info level, no longer as a warning,
+  when the gateway closed the primary link itself because the session ended.
+  It is still a warning when the primary link goes away on its own.
 - Secondaries no longer receive the charger's responses (`CALLRESULT`,
   `CALLERROR`). Those answer the primary's commands, so a secondary got
   replies to requests it never sent, logged as protocol errors or matched

@@ -110,16 +110,16 @@ describe("buffered data frames", () => {
   });
 
   it("ends the session of a charger that sends CALLs without reading", async () => {
-    const warnings: Record<string, unknown>[] = [];
-    configureLogger({
-      logLevel: "warn",
-      sink: {
-        stdout: (line) => warnings.push(JSON.parse(line) as Record<string, unknown>),
-        stderr: () => undefined,
-      },
-    });
+    const entries: Record<string, unknown>[] = [];
+    const collect = (line: string) => entries.push(JSON.parse(line) as Record<string, unknown>);
+    configureLogger({ logLevel: "info", sink: { stdout: collect, stderr: collect } });
     await flood(await setup());
+    // Logged once the gateway's side of the primary link has closed too.
+    await waitFor(() => entries.some(({ msg }) => msg === "primary disconnected"));
 
+    // One warning: closing the primary is the gateway's own doing, not an outage.
+    const warnings = entries.filter(({ level }) => level !== "info" && level !== "debug");
+    expect(warnings.map(({ msg }) => msg)).toEqual([SATURATED]);
     const saturated = warnings.filter(({ msg }) => msg === SATURATED);
     expect(saturated).toEqual([
       expect.objectContaining({ link: "charger", maxBufferedBytes: 1024 * 1024 }),

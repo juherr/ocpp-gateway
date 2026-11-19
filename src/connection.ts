@@ -359,7 +359,9 @@ export class ChargerConnection {
     });
 
     ws.on("close", (code, reason) => {
-      this.log.warn("primary disconnected", {
+      // After teardown, the gateway closed it itself: not an outage.
+      const level = this.alive ? "warn" : "info";
+      this.log[level]("primary disconnected", {
         url: logUrl,
         code,
         reason: reason.toString(),
