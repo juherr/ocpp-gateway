@@ -28,7 +28,8 @@ const call = (id: number) => JSON.stringify([2, String(id), "Heartbeat", {}]);
 
 /**
  * A gateway routing every charger to one primary CSMS that answers each CALL
- * with a CALLRESULT of `answerBytes`, then calls `onCall`.
+ * with a CALLRESULT of `answerBytes`, then calls `onCall`, on every primary
+ * link it accepts. `upstream` is the first one, `url` the charger's endpoint.
  */
 async function setup({
   answerBytes = ANSWER_BYTES,
@@ -45,7 +46,7 @@ async function setup({
   const calls: { answered: number; onCall?: () => void } = { answered: 0 };
   const padding = "x".repeat(answerBytes);
   const upstream = new Promise<WebSocket>((resolve) => {
-    csms.once("connection", (ws) => {
+    csms.on("connection", (ws) => {
       ws.on("message", (data) => {
         const [, id] = JSON.parse(data.toString()) as [number, string];
         ws.send(JSON.stringify([3, id, { padding }]));
@@ -63,9 +64,10 @@ async function setup({
     { traceSink },
   );
   cleanups.push(() => gateway.close());
-  const charger = await connectWhenOpen(`ws://127.0.0.1:${gateway.port}/CP-001`, "ocpp1.6");
+  const url = `ws://127.0.0.1:${gateway.port}/CP-001`;
+  const charger = await connectWhenOpen(url, "ocpp1.6");
   cleanups.push(() => charger.terminate());
-  return { charger, upstream: await upstream, calls };
+  return { charger, url, upstream: await upstream, calls };
 }
 
 /**
@@ -111,7 +113,17 @@ describe("buffered data frames", () => {
   }, 30_000);
 
   it("returns every answer to a charger that sends a burst after reconnecting", async () => {
-    const { charger } = await setup({ answerBytes: 1024 });
+    const { charger: first, url } = await setup({ answerBytes: 1024 });
+    const closed = waitForClose(first);
+    first.close();
+    await closed;
+    const charger = await connectWhenOpen(url, "ocpp1.6");
+    cleanups.push(() => charger.terminate());
+    // An answer proves the new primary link is open: until then, the burst
+    // would wait in its connect queue, which keeps only the newest messages.
+    const opened = answersOf(charger, 1, 1024);
+    charger.send(call(-1));
+    expect(await opened).toEqual(["-1"]);
     const BURST = 200;
     const answers = answersOf(charger, BURST, 1024);
 
