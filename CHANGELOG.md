@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-19
+
+Adds trace archiving to MongoDB, a live viewer, error reporting to Sentry,
+session limits, prefix patterns in the routes file and an optional keepalive
+ping to charge points, and bounds the memory a peer that floods or stops
+reading can take. The image is published as
+`ghcr.io/juherr/ocpp-gateway:0.2.0`.
+
+**Upgrading from 0.1.0:**
+
+- Rename any `chargers` key ending with `*` (or containing one): `*` now
+  marks a prefix pattern, and a key with a `*` anywhere else fails the load.
+- Building from source or the Docker image needs a GitHub token with
+  `read:packages` in `GITHUB_TOKEN` (see Changed). Running the published
+  image does not.
+
 ### Added
 
 - Optional keepalive ping from the gateway to each charge point:
@@ -346,5 +362,6 @@ global primary/secondary configuration. The image is published as
   detection, and a bounded per-secondary replay queue.
 - MIT license and upstream attribution.
 
-[Unreleased]: https://github.com/juherr/ocpp-gateway/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/juherr/ocpp-gateway/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/juherr/ocpp-gateway/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/juherr/ocpp-gateway/releases/tag/v0.1.0
