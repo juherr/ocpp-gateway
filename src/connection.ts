@@ -10,7 +10,14 @@ import { OCPP_SUBPROTOCOLS } from "./types";
 import { BoundedQueue } from "./utils/bounded-queue";
 import { isOcppResponse } from "./utils/ocpp";
 import { redactUrl } from "./utils/url";
-import { forwardPing, forwardPong, isUtf8Data, rawDataToString } from "./utils/websocket";
+import {
+  type ForwardResult,
+  MAX_PENDING_FORWARDED_CONTROL_FRAMES,
+  forwardPing,
+  forwardPong,
+  isUtf8Data,
+  rawDataToString,
+} from "./utils/websocket";
 
 /**
  * Manages the full lifecycle of a single charger connection:
@@ -32,6 +39,9 @@ import { forwardPing, forwardPong, isUtf8Data, rawDataToString } from "./utils/w
  *   messages while reconnecting so brief blips don't lose data.
  * - Every queue is bounded by count and by total bytes, dropping the
  *   oldest messages first.
+ * - Pings and pongs are forwarded end to end, at most
+ *   `MAX_PENDING_FORWARDED_CONTROL_FRAMES` not yet written out per link:
+ *   past that, the charger is terminated and the session ends.
  * - With trace sinks (the archive, a live viewer), every received frame is
  *   captured once, at ingress, and each destination's delivery outcome is
  *   tracked (queued, submitted, written, failed, dropped) on that same
@@ -226,14 +236,14 @@ export class ChargerConnection {
 
     this.charger.on("ping", (data) => {
       this.chargerLastSeenAt = Date.now();
-      forwardPing(this.primary, data);
+      this.enforceControlFrameCap("primary", forwardPing(this.primary, data));
     });
 
     this.charger.on("pong", (data) => {
       this.chargerLastSeenAt = Date.now();
       // The answer to the gateway's own ping: the primary never asked for it.
       if (this.chargerPingToken?.equals(data)) return;
-      forwardPong(this.primary, data);
+      this.enforceControlFrameCap("primary", forwardPong(this.primary, data));
     });
 
     this.log.info("session started", {
@@ -335,10 +345,10 @@ export class ChargerConnection {
     });
 
     ws.on("ping", (data) => {
-      forwardPing(this.charger, data);
+      this.enforceControlFrameCap("charger", forwardPing(this.charger, data));
     });
     ws.on("pong", (data) => {
-      forwardPong(this.charger, data);
+      this.enforceControlFrameCap("charger", forwardPong(this.charger, data));
     });
 
     return ws;
@@ -397,6 +407,28 @@ export class ChargerConnection {
     });
 
     return ws;
+  }
+
+  /**
+   * Act on a forwarded ping or pong refused because its target holds too many
+   * not yet written out. The charger drives that flood in either direction
+   * (its pings make the primary answer, its own pings and pongs pile up on a
+   * slower primary link), so the charger link is the one cut: terminated,
+   * since a close frame would wait behind frames a peer that does not read
+   * never takes. Once terminated, no link forwards again: logged once.
+   */
+  private enforceControlFrameCap(link: "charger" | "primary", result: ForwardResult) {
+    if (result !== "over-cap") return;
+    this.log.warn("forwarded control frames piling up, closing the charger", {
+      link,
+      pending: MAX_PENDING_FORWARDED_CONTROL_FRAMES,
+    });
+    try {
+      this.charger.terminate();
+    } catch {
+      /* best-effort */
+    }
+    this.teardown();
   }
 
   private createQueue(): BoundedQueue<QueuedMessage> {

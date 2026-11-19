@@ -81,7 +81,7 @@ Charger sessions live for days/weeks, so secondaries get extras tuned by the `SE
 - **Pong-timeout detection** — if no pong arrives within the timeout, the socket is force-closed to trigger reconnect.
 - **Bounded replay queue** per secondary while disconnected, by count and bytes; oldest messages drop first when full.
 
-WebSocket ping/pong frames are forwarded between charger and primary via the `forwardPing`/`forwardPong` helpers in `utils/websocket.ts`, which guard on `readyState === OPEN`.
+WebSocket ping/pong frames are forwarded between charger and primary via the `forwardPing`/`forwardPong` helpers in `utils/websocket.ts`, which guard on `readyState === OPEN` and cap the forwarded frames not yet written out per target socket (`MAX_PENDING_FORWARDED_CONTROL_FRAMES`, 60 like `ws`'s `maxPendingAutoPongs`, which `autoPong: false` bypasses). Past the cap, `connection.ts` terminates the charger (a close frame would never reach a peer that does not read) and ends the session, whichever link is full: the charger drives the flood either way.
 
 **Charger keepalive** (opt-in, `CHARGER_PING_INTERVAL`): the session pings the charger every interval with a random per-session payload, and the charger `pong` handler swallows the pongs carrying it — they answer the gateway, never the primary — while every other pong is still forwarded. Any frame from the charger (message, ping, pong) counts as a sign of life; none for `CHARGER_PONG_TIMEOUT_INTERVALS` (3) intervals → `terminate()` (a dead peer never completes a close handshake) and teardown. Off (0), no token exists and the wire is unchanged. Pings are never archived: the tracer only runs in `message` handlers. `test/charger-keepalive.test.ts` stands in for an idle-cutting proxy with a TCP relay.
 
