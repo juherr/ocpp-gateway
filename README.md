@@ -249,6 +249,7 @@ All configuration is done through environment variables:
 | `TENANT_BASE_DOMAIN`           | No       | —               | Tenants are subdomains of this domain (`acme.<domain>` → `acme`). See [Multi-tenant routing](#multi-tenant-routing) |
 | `TENANT_HOST_HEADER`           | No       | — (`Host`)      | Header holding the dialled hostname, set by a **trusted** reverse proxy (e.g. `x-forwarded-host`) |
 | `MAX_MESSAGE_BYTES`            | No       | `1048576`       | Largest WebSocket message (bytes, `1`–`2147483647`) accepted from a charger or a CSMS; a bigger one closes that connection with `1009`. See [Message size limit](#message-size-limit). At most `15728640` (15 MiB) with trace archiving |
+| `MAX_BUFFERED_BYTES`           | No       | 1 MiB or `MAX_MESSAGE_BYTES`, whichever is larger | Bytes the gateway may hold for one link (charger, primary, secondary) that reads slower than it is written to; never below the default. See [Message size limit](#message-size-limit) |
 | `MAX_SESSIONS`                 | No       | — (unlimited)   | Live charger sessions; more are closed with `1013`. See [Session limits](#session-limits) |
 | `MAX_PENDING_SESSIONS`         | No       | — (unlimited)   | Sessions whose primary CSMS link is still connecting; more are closed with `1013` |
 | `MAX_SESSIONS_PER_SOURCE`      | No       | — (unlimited)   | Live charger sessions per client source (IP address); more are closed with `1013` |
@@ -279,6 +280,8 @@ All configuration is done through environment variables:
 A message over the limit closes the link it arrived on with `1009` and is never forwarded nor queued: a charger is disconnected, a primary ends the session (the charger is closed with `1011`), a secondary reconnects without affecting the charger or the primary.
 
 Messages waiting for an upstream link (the primary while it connects, a secondary while it reconnects) are buffered per link up to 100 messages and 1 MiB or `MAX_MESSAGE_BYTES`, whichever is larger — oldest dropped first — so raising `MAX_MESSAGE_BYTES` does not multiply the memory a session can hold by 100.
+
+Messages already sent on an open link wait in the gateway until the peer reads them. `MAX_BUFFERED_BYTES` (default 1 MiB or `MAX_MESSAGE_BYTES`, whichever is larger) bounds them per link, checked before each message (so a link holds at most that plus one message): a charger that stops reading what the primary answers, or a primary that reads slower than its charger writes, ends the session (the charger is cut without a close handshake, with one warning); a secondary over the bound is cut and reconnected, its messages queued meanwhile, without affecting the charger or the primary. A charger that reads keeps every message: OCPP-J expects each side to wait for the answer to a CALL before sending the next, so only a charger pipelining many CALLs with large answers over a slow link could reach the bound — raise `MAX_BUFFERED_BYTES` if yours do.
 
 ### Session limits
 
@@ -465,7 +468,7 @@ One document per received frame — never one per destination, and a frame repla
 | `submitted` | Handed to the WebSocket                                                                       |
 | `written`   | The WebSocket wrote it to the TCP connection. **Not** a proof the peer received or processed it: only an OCPP response is |
 | `failed`    | The WebSocket reported an error (`reason` holds it)                                           |
-| `dropped`   | Discarded by the gateway — `reason`: `queue-overflow` (oldest message evicted from a full queue), `session-ended` (still queued when the session ended), `link-not-open` (the link was closing or closed) |
+| `dropped`   | Discarded by the gateway — `reason`: `queue-overflow` (oldest message evicted from a full queue), `session-ended` (still queued when the session ended), `link-not-open` (the link was closing or closed), `link-saturated` (the link held more than `MAX_BUFFERED_BYTES`, so the gateway cut it) |
 
   Statuses only move forward (`queued` → `submitted` → a final status), so a late or repeated update never overwrites a newer one. Usually a frame is written once, with its final outcome already known.
 - **`kind: "frame"`** documents hold frames that Open OCPP Trace v1.1 cannot represent, so that no record falsely claims conformance: invalid JSON, not an OCPP-J array, wrong length, a numeric message id (OCPP requires a string, and the record would contradict `raw`), OCPP 2.1 message types (`SEND`, `CALLRESULTERROR`), non-string `action` or error code/description, a binary frame that is not valid UTF-8. They carry `frame: { timestamp, ocppVersion, chargePointId, direction, raw, reason, meta }` instead of `trace`. A record too large for a MongoDB document once parsed (BSON can take several times the JSON size) is also stored this way, with `reason: "document-too-large"`: `raw` is kept whole, never truncated. The gateway's own `__pong__` keepalive text from some CSMS is not OCPP and is not archived.

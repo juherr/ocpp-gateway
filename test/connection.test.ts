@@ -29,6 +29,8 @@ interface MockSocket {
   pongs: Buffer[];
   /** Write callbacks of the pings and pongs that passed one, in order. */
   controlCallbacks: ((error?: Error) => void)[];
+  /** Bytes the socket holds, not yet written out; set by the test. */
+  bufferedAmount: number;
   emit(event: string, ...args: unknown[]): boolean;
 }
 
@@ -55,6 +57,7 @@ vi.mock("ws", async () => {
     callbacks: ((error?: Error) => void)[] = [];
     sendError: Error | null = null;
     controlCallbacks: ((error?: Error) => void)[] = [];
+    bufferedAmount = 0;
 
     constructor(
       readonly url: string | null,
@@ -149,7 +152,11 @@ function captureWarnings() {
 const messagesOf = (entries: LogEntry[]) => entries.map(({ msg }) => msg);
 
 /** Start a session for a charger routed to a single primary and, by default, no secondaries. */
-function startSession({ maxPayload = MAX_PAYLOAD, secondaries = [] as Backend[] } = {}) {
+function startSession({
+  maxPayload = MAX_PAYLOAD,
+  secondaries = [] as Backend[],
+  maxBufferedBytes = undefined as number | undefined,
+} = {}) {
   const charger = createMockChargerSocket();
   const session = { ended: 0 };
   new ChargerConnection(
@@ -160,6 +167,10 @@ function startSession({ maxPayload = MAX_PAYLOAD, secondaries = [] as Backend[] 
     undefined,
     maxPayload,
     () => session.ended++,
+    [],
+    undefined,
+    0,
+    maxBufferedBytes,
   );
   const [primary, secondary] = outbound;
   const send = (raw: string) => {
@@ -1021,5 +1032,176 @@ describe("ChargerConnection forwarded control frames", () => {
     expect(terminated).toEqual([]);
     expect(warnings).toEqual([]);
     expect(session.ended).toBe(0);
+  });
+});
+
+describe("ChargerConnection buffered bytes", () => {
+  /** A bound small enough to set in tests, above a maximum-size message. */
+  const BOUND = 4 * MAX_PAYLOAD;
+  const CALL = JSON.stringify([2, "m1", "Heartbeat", {}]);
+  const RESULT = JSON.stringify([3, "m1", { currentTime: "2026-01-01T00:00:00Z" }]);
+
+  function openSession(options: { secondaries?: Backend[]; maxBufferedBytes?: number } = {}) {
+    const started = startSession({ maxBufferedBytes: BOUND, ...options });
+    started.primary.emit("open");
+    started.secondary?.emit("open");
+    const charger = started.charger as unknown as MockSocket;
+    return { ...started, charger };
+  }
+
+  it("forwards to a charger holding exactly the bound", () => {
+    const warnings = captureWarnings();
+    const { charger, primary, session } = openSession();
+
+    charger.bufferedAmount = BOUND;
+    primary.emit("message", Buffer.from(RESULT), false);
+
+    expect(charger.sent).toEqual([RESULT]);
+    expect(terminated).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(session.ended).toBe(0);
+  });
+
+  it("closes a charger that holds more than the bound, once", () => {
+    const warnings = captureWarnings();
+    const { charger, primary, session } = openSession();
+
+    charger.bufferedAmount = BOUND + 1;
+    primary.emit("message", Buffer.from(RESULT), false);
+    primary.emit("message", Buffer.from(RESULT), false);
+
+    expect(charger.sent).toEqual([]);
+    expect(terminated).toEqual([charger]);
+    expect(warnings).toEqual([
+      expect.objectContaining({
+        msg: "send buffer full, closing the charger",
+        link: "charger",
+        bufferedAmount: BOUND + 1,
+        maxBufferedBytes: BOUND,
+      }),
+    ]);
+    expect(session.ended).toBe(1);
+    expect(primary.readyState).toBe(WebSocket.CLOSED);
+  });
+
+  it("closes the charger when the primary holds more than the bound", () => {
+    const warnings = captureWarnings();
+    const { charger, primary, secondary, send, session } = openSession({
+      secondaries: [{ url: "ws://mirror.example/ocpp", appendChargeBoxId: true }],
+    });
+
+    primary.bufferedAmount = BOUND + 1;
+    send(CALL);
+
+    expect(primary.sent).toEqual([]);
+    expect(secondary.sent).toEqual([]);
+    expect(terminated).toEqual([charger]);
+    expect(warnings).toEqual([
+      expect.objectContaining({ msg: "send buffer full, closing the charger", link: "primary" }),
+    ]);
+    expect(session.ended).toBe(1);
+  });
+
+  it("reconnects a secondary that holds more than the bound, replaying the frame", () => {
+    vi.useFakeTimers();
+    try {
+      const warnings = captureWarnings();
+      const { charger, primary, secondary, send, session } = openSession({
+        secondaries: [{ url: "ws://mirror.example/ocpp", appendChargeBoxId: true }],
+      });
+
+      secondary.bufferedAmount = BOUND + 1;
+      send(CALL);
+
+      // The charger and the primary never notice.
+      expect(primary.sent).toEqual([CALL]);
+      expect(charger.readyState).toBe(WebSocket.OPEN);
+      expect(session.ended).toBe(0);
+      expect(terminated).toEqual([secondary]);
+      expect(secondary.sent).toEqual([]);
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          msg: "secondary send buffer full, reconnecting",
+          url: "ws://mirror.example/ocpp/cp-abc",
+          bufferedAmount: BOUND + 1,
+          maxBufferedBytes: BOUND,
+        }),
+        expect.objectContaining({ msg: "secondary disconnected" }),
+      ]);
+
+      vi.advanceTimersByTime(SECONDARY_RECONNECT_DELAY_MS);
+      const reconnected = outbound[2];
+      reconnected.emit("open");
+      expect(reconnected.sent).toEqual([CALL]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { maxPayload: MAX_PAYLOAD, bound: UPSTREAM_MAX_QUEUE_BYTES },
+    { maxPayload: 2 * UPSTREAM_MAX_QUEUE_BYTES, bound: 2 * UPSTREAM_MAX_QUEUE_BYTES },
+  ])("defaults the bound to $bound bytes for frames of $maxPayload", ({ maxPayload, bound }) => {
+    const { charger, primary } = startSession({ maxPayload });
+    primary.emit("open");
+    const socket = charger as unknown as MockSocket;
+
+    socket.bufferedAmount = bound;
+    primary.emit("message", Buffer.from(RESULT), false);
+    expect(socket.sent).toEqual([RESULT]);
+
+    socket.bufferedAmount = bound + 1;
+    primary.emit("message", Buffer.from(RESULT), false);
+    expect(terminated).toEqual([socket]);
+  });
+});
+
+describe("ChargerConnection buffered bytes trace", () => {
+  const CALL = JSON.stringify([2, "m1", "Heartbeat", {}]);
+
+  function startTracedSession() {
+    const sink = new MemoryTraceSink();
+    const charger = createMockChargerSocket() as unknown as MockSocket;
+    new ChargerConnection(
+      charger as unknown as WebSocket,
+      { tenantId: null, chargeBoxId: "cp-abc" },
+      {
+        primary: { id: "csms-main", url: "ws://csms.example/ocpp", appendChargeBoxId: true },
+        secondaries: [{ id: "mirror-1", url: "ws://mirror.example/ocpp", appendChargeBoxId: true }],
+      },
+      "ocpp1.6",
+      undefined,
+      MAX_PAYLOAD,
+      () => undefined,
+      [sink],
+    );
+    const [primary, mirror] = outbound;
+    primary.emit("open");
+    mirror.emit("open");
+    return { sink, charger, primary, mirror };
+  }
+
+  const outcomes = (sink: MemoryTraceSink, doc: number) =>
+    sink.docs[doc].deliveries.map((d) => [d.target, d.status, d.reason]);
+
+  it("records the frame refused by a full charger as dropped, link-saturated", () => {
+    const { sink, charger, primary } = startTracedSession();
+
+    charger.bufferedAmount = UPSTREAM_MAX_QUEUE_BYTES + 1;
+    primary.emit("message", Buffer.from(JSON.stringify([2, "c1", "Reset", {}])), false);
+
+    expect(outcomes(sink, 0)).toEqual([["cp-abc", "dropped", "link-saturated"]]);
+  });
+
+  it("records a charger frame refused by a full primary as dropped everywhere", () => {
+    const { sink, charger, primary } = startTracedSession();
+
+    primary.bufferedAmount = UPSTREAM_MAX_QUEUE_BYTES + 1;
+    charger.emit("message", Buffer.from(CALL), false);
+
+    expect(outcomes(sink, 0)).toEqual([
+      ["csms-main", "dropped", "link-saturated"],
+      ["mirror-1", "dropped", "session-ended"],
+    ]);
   });
 });

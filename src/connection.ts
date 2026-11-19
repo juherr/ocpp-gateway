@@ -42,6 +42,10 @@ import {
  * - Pings and pongs are forwarded end to end, at most
  *   `MAX_PENDING_FORWARDED_CONTROL_FRAMES` not yet written out per link:
  *   past that, the charger is terminated and the session ends.
+ * - No link may hold more than `maxBufferedBytes` not yet written out
+ *   (`bufferedAmount`, checked before each message): the charger and the
+ *   primary are the session, so either one over it ends the session; a
+ *   secondary over it is cut and reconnected, its messages queued meanwhile.
  * - With trace sinks (the archive, a live viewer), every received frame is
  *   captured once, at ingress, and each destination's delivery outcome is
  *   tracked (queued, submitted, written, failed, dropped) on that same
@@ -109,6 +113,11 @@ export class ChargerConnection {
     private readonly onPrimaryOpen?: () => void,
     /** Interval between the gateway's pings to the charger; 0: never pinged. */
     private readonly chargerPingIntervalMs = 0,
+    /**
+     * Bytes a link may hold not yet written out before the next message to it
+     * is refused; by default the size of an upstream queue.
+     */
+    private readonly maxBufferedBytes = Math.max(UPSTREAM_MAX_QUEUE_BYTES, maxPayload),
   ) {
     // Tag logs with the tenant too: two tenants may share a chargeBoxId.
     this.log = createLogger(formatSessionKey(key));
@@ -196,6 +205,18 @@ export class ChargerConnection {
 
       const primary = this.primary;
       const primaryDelivery = frame?.delivery(0);
+      // The charger writes faster than the primary reads: forward nothing.
+      if (primary?.readyState === WebSocket.OPEN && this.isSaturated(primary)) {
+        primaryDelivery?.dropped("link-saturated");
+        for (let i = 1; i <= secondaries.length; i++) frame?.delivery(i).dropped("session-ended");
+        frame?.commit();
+        this.closeCharger("send buffer full, closing the charger", {
+          link: "primary",
+          bufferedAmount: primary.bufferedAmount,
+          maxBufferedBytes: this.maxBufferedBytes,
+        });
+        return;
+      }
       if (primary?.readyState === WebSocket.OPEN) {
         send(primary, raw, primaryDelivery);
       } else if (primary?.readyState === WebSocket.CONNECTING) {
@@ -207,6 +228,9 @@ export class ChargerConnection {
 
       secondaries.forEach((sec, index) => {
         const delivery = frame?.delivery(index + 1);
+        if (sec.ws?.readyState === WebSocket.OPEN && this.isSaturated(sec.ws)) {
+          this.reconnectSaturatedSecondary(sec, sec.ws);
+        }
         if (sec.ws?.readyState === WebSocket.OPEN) {
           try {
             send(sec.ws, raw, delivery);
@@ -318,7 +342,15 @@ export class ChargerConnection {
       const raw = rawDataToString(data);
       this.log.debugOcppFrame("primary → charger", raw);
       const frame = this.tracer?.fromPrimary(raw, encodingOf(data, isBinary));
-      if (this.charger.readyState === WebSocket.OPEN) {
+      if (this.charger.readyState === WebSocket.OPEN && this.isSaturated(this.charger)) {
+        // The charger stopped reading what it asked for: cut it.
+        frame?.delivery(0).dropped("link-saturated");
+        this.closeCharger("send buffer full, closing the charger", {
+          link: "charger",
+          bufferedAmount: this.charger.bufferedAmount,
+          maxBufferedBytes: this.maxBufferedBytes,
+        });
+      } else if (this.charger.readyState === WebSocket.OPEN) {
         send(this.charger, raw, frame?.delivery(0));
       } else {
         frame?.delivery(0).dropped("link-not-open");
@@ -419,16 +451,49 @@ export class ChargerConnection {
    */
   private enforceControlFrameCap(link: "charger" | "primary", result: ForwardResult) {
     if (result !== "over-cap") return;
-    this.log.warn("forwarded control frames piling up, closing the charger", {
+    this.closeCharger("forwarded control frames piling up, closing the charger", {
       link,
       pending: MAX_PENDING_FORWARDED_CONTROL_FRAMES,
     });
+  }
+
+  /** Whether `ws` holds more than `maxBufferedBytes` not yet written out. */
+  private isSaturated(ws: WebSocket): boolean {
+    return ws.bufferedAmount > this.maxBufferedBytes;
+  }
+
+  /**
+   * End the session of a charger that floods a link: terminated, since a
+   * close frame would wait behind frames a peer that does not read never
+   * takes. Once ended, nothing forwards again, so this is logged once.
+   */
+  private closeCharger(message: string, fields: Record<string, unknown>) {
+    if (!this.alive) return;
+    this.log.warn(message, fields);
     try {
       this.charger.terminate();
     } catch {
       /* best-effort */
     }
     this.teardown();
+  }
+
+  /**
+   * Cut a secondary that reads slower than the charger writes, never the
+   * session: its `close` schedules the reconnect, and messages wait in its
+   * bounded queue meanwhile, as for any other outage.
+   */
+  private reconnectSaturatedSecondary(state: SecondaryState, ws: WebSocket) {
+    this.log.warn("secondary send buffer full, reconnecting", {
+      url: state.logUrl,
+      bufferedAmount: ws.bufferedAmount,
+      maxBufferedBytes: this.maxBufferedBytes,
+    });
+    try {
+      ws.terminate();
+    } catch {
+      /* best-effort */
+    }
   }
 
   private createQueue(): BoundedQueue<QueuedMessage> {
