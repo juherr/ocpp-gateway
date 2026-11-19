@@ -42,8 +42,10 @@ import {
  * - Pings and pongs are forwarded end to end, at most
  *   `MAX_PENDING_FORWARDED_CONTROL_FRAMES` not yet written out per link:
  *   past that, the charger is terminated and the session ends.
- * - No link may hold more than `maxBufferedBytes` not yet written out
- *   (`bufferedAmount`, checked before each message): the charger and the
+ * - No message is forwarded live on a link already holding more than
+ *   `maxBufferedBytes` not yet written out (`bufferedAmount`), so a link
+ *   holds at most that plus one message (a connect queue flushed on open is
+ *   bounded on its own): the charger and the
  *   primary are the session, so either one over it ends the session; a
  *   secondary over it is cut and reconnected, its messages queued meanwhile.
  * - With trace sinks (the archive, a live viewer), every received frame is
