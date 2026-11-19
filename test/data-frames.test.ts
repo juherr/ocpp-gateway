@@ -68,12 +68,24 @@ async function setup({
   return { charger, upstream: await upstream, calls };
 }
 
-/** The ids of the next `count` answers the charger reads. */
-function answersOf(charger: WebSocket, count: number) {
+/**
+ * The ids of the next `count` answers the charger reads, each checked to be a
+ * whole CALLRESULT of `answerBytes` of padding (only the id is kept).
+ */
+function answersOf(charger: WebSocket, count: number, answerBytes: number) {
   const ids: string[] = [];
-  return new Promise<string[]>((resolve) => {
+  return new Promise<string[]>((resolve, reject) => {
     charger.on("message", (data) => {
-      ids.push((JSON.parse(data.toString()) as [number, string])[1]);
+      const [type, id, payload] = JSON.parse(data.toString()) as [
+        number,
+        string,
+        { padding?: string },
+      ];
+      if (type !== 3 || payload?.padding?.length !== answerBytes) {
+        reject(new Error(`answer ${id} is not a CALLRESULT of ${answerBytes} bytes`));
+        return;
+      }
+      ids.push(id);
       if (ids.length === count) resolve(ids);
     });
   });
@@ -85,7 +97,7 @@ describe("buffered data frames", () => {
   it("returns every answer to a charger that waits for each one, far beyond the bound", async () => {
     const { charger } = await setup();
     const COUNT = 200;
-    const answers = answersOf(charger, COUNT);
+    const answers = answersOf(charger, COUNT, ANSWER_BYTES);
 
     // One CALL at a time, as OCPP requires: 200 × 256 KiB = 50 MiB in total.
     let next = 0;
@@ -101,7 +113,7 @@ describe("buffered data frames", () => {
   it("returns every answer to a charger that sends a burst after reconnecting", async () => {
     const { charger } = await setup({ answerBytes: 1024 });
     const BURST = 200;
-    const answers = answersOf(charger, BURST);
+    const answers = answersOf(charger, BURST, 1024);
 
     for (let i = 0; i < BURST; i++) charger.send(call(i));
 
