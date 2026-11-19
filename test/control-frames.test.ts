@@ -3,10 +3,14 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { type WebSocket, WebSocketServer } from "ws";
 import { configureLogger } from "../src/logger";
+import { MAX_PENDING_FORWARDED_CONTROL_FRAMES } from "../src/utils/websocket";
 import { connectWhenOpen, startGateway, waitForClose } from "./helpers";
 
 /** The largest payload a control frame may carry. */
 const MAX_CONTROL_PAYLOAD = Buffer.alloc(125, 0x61);
+
+/** Pings the flooding charger keeps on their way, well under the cap. */
+const PINGS_IN_FLIGHT = MAX_PENDING_FORWARDED_CONTROL_FRAMES / 4;
 
 const CAPPED = "forwarded control frames piling up, closing the charger";
 
@@ -79,12 +83,18 @@ describe("forwarded control frames", () => {
     const primaryClosed = waitForClose(upstream, 15_000);
 
     charger.pause();
-    // The next ping leaves once the CSMS has answered the previous one: the
-    // gateway never reads a burst of pings (a burst over the cap is refused
-    // on its own), so only the pongs the charger leaves unread pile up.
+    // A new ping leaves each time the CSMS answers one, so at most
+    // PINGS_IN_FLIGHT are on their way: the gateway never reads a burst of
+    // pings over the cap (refused on its own), and only the pongs the charger
+    // leaves unread pile up. A window, not one at a time: Linux's localhost
+    // buffers take tens of thousands of pongs before the gateway holds any.
+    // Assumes Linux's default receive buffer cap (`tcp_rmem` max 6 MiB): with
+    // a far larger one (32 MiB in Docker Desktop's VM), the paused charger's
+    // kernel drops the gateway's segments, and the acknowledgements of its
+    // pings with them, so the flood stalls before the gateway holds a pong.
     const ping = () => charger.ping(MAX_CONTROL_PAYLOAD, undefined, () => undefined);
     pings.onPing = ping;
-    ping();
+    for (let i = 0; i < PINGS_IN_FLIGHT; i++) ping();
 
     try {
       // The kernel buffers absorb thousands of pongs before the gateway holds
