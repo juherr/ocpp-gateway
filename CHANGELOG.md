@@ -180,6 +180,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that floods pings while not reading can no longer exhaust the gateway's
   memory: past 60 unsent pongs, the gateway drops that secondary link and
   reconnects it as after any other failure.
+- A charge point that floods pings while not reading its socket can no longer
+  exhaust the gateway's memory with the primary CSMS's pongs, which `ws`'s cap
+  does not cover: pings and pongs are forwarded end to end. Past 60 forwarded
+  pings or pongs not yet written out to the charger or the primary, the
+  gateway cuts the charge point's connection and ends its session, with one
+  warning. As with `ws`, a burst of more than 60 pings received at once ends
+  the session too.
 
 ## [0.1.0] - 2026-10-06
 

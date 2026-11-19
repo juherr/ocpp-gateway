@@ -9,6 +9,7 @@ import {
 import { configureLogger } from "../src/logger";
 import { parseOcppFrame } from "../src/trace/frame";
 import type { Backend } from "../src/routes";
+import { MAX_PENDING_FORWARDED_CONTROL_FRAMES } from "../src/utils/websocket";
 import { MemoryTraceSink } from "./trace/memory-sink";
 
 /** The test-facing surface of an upstream socket from the `ws` mock below. */
@@ -26,11 +27,14 @@ interface MockSocket {
   /** Payloads of the pings and pongs sent on this socket, in order. */
   pings: Buffer[];
   pongs: Buffer[];
+  /** Write callbacks of the pings and pongs that passed one, in order. */
+  controlCallbacks: ((error?: Error) => void)[];
   emit(event: string, ...args: unknown[]): boolean;
 }
 
 let outbound: MockSocket[] = [];
 let closeCodes: (number | undefined)[] = [];
+let terminated: unknown[] = [];
 
 /*
  * ChargerConnection creates outbound WebSocket instances internally. Mocking
@@ -50,6 +54,7 @@ vi.mock("ws", async () => {
     sent: string[] = [];
     callbacks: ((error?: Error) => void)[] = [];
     sendError: Error | null = null;
+    controlCallbacks: ((error?: Error) => void)[] = [];
 
     constructor(
       readonly url: string | null,
@@ -80,14 +85,17 @@ vi.mock("ws", async () => {
     }
     pings: Buffer[] = [];
     pongs: Buffer[] = [];
-    ping(data?: Buffer) {
+    ping(data?: Buffer, _mask?: boolean, callback?: (error?: Error) => void) {
       this.pings.push(data ?? Buffer.alloc(0));
+      if (callback) this.controlCallbacks.push(callback);
     }
-    pong(data?: Buffer) {
+    pong(data?: Buffer, _mask?: boolean, callback?: (error?: Error) => void) {
       this.pongs.push(data ?? Buffer.alloc(0));
+      if (callback) this.controlCallbacks.push(callback);
     }
     /** Like the real ws: no close handshake, a 1006 close once the socket is destroyed. */
     terminate() {
+      terminated.push(this);
       this.readyState = MockWebSocket.CLOSED;
       this.emit("close", 1006, Buffer.from(""));
     }
@@ -110,6 +118,7 @@ const MAX_PAYLOAD = 4096;
 beforeEach(() => {
   outbound = [];
   closeCodes = [];
+  terminated = [];
 });
 
 /** Where ChargerConnection dialled, in order. */
@@ -142,6 +151,7 @@ const messagesOf = (entries: LogEntry[]) => entries.map(({ msg }) => msg);
 /** Start a session for a charger routed to a single primary and, by default, no secondaries. */
 function startSession({ maxPayload = MAX_PAYLOAD, secondaries = [] as Backend[] } = {}) {
   const charger = createMockChargerSocket();
+  const session = { ended: 0 };
   new ChargerConnection(
     charger,
     { tenantId: null, chargeBoxId: "cp-abc" },
@@ -149,7 +159,7 @@ function startSession({ maxPayload = MAX_PAYLOAD, secondaries = [] as Backend[] 
     "ocpp1.6",
     undefined,
     maxPayload,
-    () => undefined,
+    () => session.ended++,
   );
   const [primary, secondary] = outbound;
   const send = (raw: string) => {
@@ -159,7 +169,7 @@ function startSession({ maxPayload = MAX_PAYLOAD, secondaries = [] as Backend[] 
     }
     charger.emit("message", Buffer.from(raw));
   };
-  return { charger, primary, secondary, send };
+  return { charger, primary, secondary, send, session };
 }
 
 /** Three distinct messages whose total size exceeds the default queue byte budget. */
@@ -932,5 +942,84 @@ describe("ChargerConnection charger keepalive", () => {
 
     vi.advanceTimersByTime(10 * INTERVAL_MS);
     expect(charger.pings).toHaveLength(1);
+  });
+});
+
+describe("ChargerConnection forwarded control frames", () => {
+  const ping = Buffer.from("keepalive");
+
+  /** An open session: the charger and its primary, both reading nothing yet. */
+  function openSession() {
+    const started = startSession();
+    started.primary.emit("open");
+    const charger = started.charger as unknown as MockSocket;
+    return { ...started, charger };
+  }
+
+  it("closes the charger once it stops reading the primary's pongs", () => {
+    const warnings = captureWarnings();
+    const { charger, primary, session } = openSession();
+
+    for (let i = 0; i < MAX_PENDING_FORWARDED_CONTROL_FRAMES; i++) primary.emit("pong", ping);
+    expect(terminated).toEqual([]);
+    primary.emit("pong", ping);
+    primary.emit("pong", ping);
+
+    expect(terminated).toEqual([charger]);
+    expect(warnings).toEqual([
+      expect.objectContaining({
+        msg: "forwarded control frames piling up, closing the charger",
+        link: "charger",
+        pending: MAX_PENDING_FORWARDED_CONTROL_FRAMES,
+      }),
+    ]);
+    expect(session.ended).toBe(1);
+    expect(primary.readyState).toBe(WebSocket.CLOSED);
+  });
+
+  it("closes the charger once the primary stops reading the charger's pings", () => {
+    const warnings = captureWarnings();
+    const { charger, primary, session } = openSession();
+
+    for (let i = 0; i <= MAX_PENDING_FORWARDED_CONTROL_FRAMES; i++) charger.emit("ping", ping);
+
+    expect(terminated).toEqual([charger]);
+    expect(warnings).toEqual([
+      expect.objectContaining({
+        msg: "forwarded control frames piling up, closing the charger",
+        link: "primary",
+      }),
+    ]);
+    expect(session.ended).toBe(1);
+    expect(primary.readyState).toBe(WebSocket.CLOSED);
+  });
+
+  it.each([
+    { from: "charger", to: "primary", event: "pong" },
+    { from: "primary", to: "charger", event: "ping" },
+  ] as const)("caps $event frames from the $from to the $to too", ({ from, to, event }) => {
+    const sockets = openSession();
+    const target = sockets[to];
+
+    for (let i = 0; i <= MAX_PENDING_FORWARDED_CONTROL_FRAMES; i++) sockets[from].emit(event, ping);
+
+    expect(target.controlCallbacks).toHaveLength(MAX_PENDING_FORWARDED_CONTROL_FRAMES);
+    expect(terminated).toEqual([sockets.charger]);
+  });
+
+  it("keeps a session whose links write their control frames out", () => {
+    const warnings = captureWarnings();
+    const { charger, primary, session } = openSession();
+
+    for (let i = 0; i < MAX_PENDING_FORWARDED_CONTROL_FRAMES * 3; i++) {
+      charger.emit("ping", ping);
+      primary.controlCallbacks.shift()!();
+      primary.emit("pong", ping);
+      charger.controlCallbacks.shift()!();
+    }
+
+    expect(terminated).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(session.ended).toBe(0);
   });
 });
