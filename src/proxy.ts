@@ -192,6 +192,7 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
       sinks,
       () => lease.primaryOpened(),
       config.chargerPingIntervalMs,
+      config.maxBufferedBytes,
     );
     leases.set(conn, lease);
     sessions.add(key, authHeader, conn);
@@ -209,6 +210,7 @@ export function startProxy(config: Config, routes: RouteStore, options: ProxyOpt
       tenantBaseDomain: config.tenantBaseDomain,
       tenantHostHeader: config.tenantHostHeader ?? "host",
       maxMessageBytes: config.maxMessageBytes,
+      maxBufferedBytes: config.maxBufferedBytes,
       maxSessions: config.maxSessions,
       maxPendingSessions: config.maxPendingSessions,
       maxSessionsPerSource: config.maxSessionsPerSource,

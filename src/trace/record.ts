@@ -125,7 +125,12 @@ export function unparsedFrame(
  */
 export type DeliveryStatus = "queued" | "submitted" | "written" | "failed" | "dropped";
 
-export type DropReason = "queue-overflow" | "session-ended" | "link-not-open" | "not-forwarded";
+export type DropReason =
+  | "queue-overflow"
+  | "session-ended"
+  | "link-not-open"
+  | "not-forwarded"
+  | "link-saturated";
 
 /** Statuses only move forward: queued → submitted → a final status. */
 export const DELIVERY_STATUS_RANK: Record<DeliveryStatus, number> = {

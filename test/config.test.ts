@@ -12,6 +12,7 @@ describe("loadConfig", () => {
     "TENANT_BASE_DOMAIN",
     "TENANT_HOST_HEADER",
     "MAX_MESSAGE_BYTES",
+    "MAX_BUFFERED_BYTES",
     "MAX_SESSIONS",
     "MAX_PENDING_SESSIONS",
     "MAX_SESSIONS_PER_SOURCE",
@@ -113,6 +114,33 @@ describe("loadConfig", () => {
     vi.stubEnv("MAX_MESSAGE_BYTES", "  ");
 
     expect(loadConfig().maxMessageBytes).toBe(1024 * 1024);
+  });
+
+  it.each([
+    { maxMessageBytes: undefined, expected: 1024 * 1024 },
+    { maxMessageBytes: "2048", expected: 1024 * 1024 },
+    { maxMessageBytes: String(4 * 1024 * 1024), expected: 4 * 1024 * 1024 },
+  ])(
+    "defaults MAX_BUFFERED_BYTES to $expected with MAX_MESSAGE_BYTES $maxMessageBytes",
+    ({ maxMessageBytes, expected }) => {
+      vi.stubEnv("MAX_MESSAGE_BYTES", maxMessageBytes);
+      vi.stubEnv("MAX_BUFFERED_BYTES", " ");
+
+      expect(loadConfig().maxBufferedBytes).toBe(expected);
+    },
+  );
+
+  it("reads MAX_BUFFERED_BYTES", () => {
+    vi.stubEnv("MAX_BUFFERED_BYTES", String(8 * 1024 * 1024));
+
+    expect(loadConfig().maxBufferedBytes).toBe(8 * 1024 * 1024);
+  });
+
+  it("refuses MAX_BUFFERED_BYTES below MAX_MESSAGE_BYTES", () => {
+    vi.stubEnv("MAX_MESSAGE_BYTES", String(4 * 1024 * 1024));
+    vi.stubEnv("MAX_BUFFERED_BYTES", String(2 * 1024 * 1024));
+
+    expect(() => loadConfig()).toThrow("Invalid value for environment variable MAX_BUFFERED_BYTES");
   });
 
   it.each([
@@ -250,6 +278,16 @@ describe("loadConfig", () => {
       envName: "MAX_MESSAGE_BYTES",
       value: "2147483648",
       expectedCause: 'Value must be an integer between 1 and 2147483647: "2147483648"',
+    },
+    {
+      envName: "MAX_BUFFERED_BYTES",
+      value: "1048575",
+      expectedCause: 'Value must be an integer between 1048576 and 9007199254740991: "1048575"',
+    },
+    {
+      envName: "MAX_BUFFERED_BYTES",
+      value: "4MiB",
+      expectedCause: 'Invalid integer: "4MiB"',
     },
     {
       envName: "CHARGER_PING_INTERVAL",

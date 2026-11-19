@@ -156,6 +156,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A charge point that stops reading its connection while it keeps sending
+  requests can no longer make the gateway run out of memory, taking every
+  other session down with it. The CSMS's answers used to pile up in the
+  gateway without limit. Now no message is sent on a link that already holds
+  more than `MAX_BUFFERED_BYTES` not yet written out (new, default 1 MiB or
+  `MAX_MESSAGE_BYTES`, whichever is larger). Instead, a charge point or primary link ends the session,
+  logged once as a warning. A secondary link is reconnected instead, with its
+  messages queued meanwhile, so the charge point and the primary do not
+  notice. In the trace archive, the message that finds a charge point or
+  primary link over the bound is `dropped` with the new reason
+  `link-saturated`; on a secondary it is queued and replayed once the link
+  is back, as during any outage. Messages already waiting on a cut link are
+  `failed`, as on any link that goes away.
+- `primary disconnected` is logged at info level, no longer as a warning,
+  when the gateway closed the primary link itself because the session ended.
+  It is still a warning when the primary link goes away on its own.
 - Secondaries no longer receive the charger's responses (`CALLRESULT`,
   `CALLERROR`). Those answer the primary's commands, so a secondary got
   replies to requests it never sent, logged as protocol errors or matched

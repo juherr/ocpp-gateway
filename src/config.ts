@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import { version } from "../package.json";
+import { UPSTREAM_MAX_QUEUE_BYTES } from "./connection";
 import type { LoggerConfig, LogLevel } from "./logger";
 import { DEFAULT_DEBUG_MESSAGE_MAX_LENGTH, DEFAULT_LOG_LEVEL, LOG_LEVELS } from "./logger";
 import { parseHostname } from "./tenants";
@@ -102,6 +103,12 @@ export interface Config {
    * a bigger one closes that connection with `1009`.
    */
   maxMessageBytes: number;
+  /**
+   * Bytes a link (charger, primary, secondary) may hold not yet written out:
+   * past it, a charger or primary link ends the session, a secondary link is
+   * reconnected. Unset: the size of an upstream queue.
+   */
+  maxBufferedBytes?: number;
   /** Live charger sessions; more are closed with `1013`. Unset: unlimited. */
   maxSessions?: number;
   /** Sessions whose primary CSMS link is still connecting; more are closed with `1013`. Unset: unlimited. */
@@ -280,6 +287,11 @@ export function loadConfig(): Config {
   const maxMessageBytes = parseEnv("MAX_MESSAGE_BYTES", (value) =>
     parseOptionalIntegerInRange(value, DEFAULT_MAX_MESSAGE_BYTES, 1, MAX_MESSAGE_BYTES_UPPER_BOUND),
   );
+  // Never below an upstream queue: a queue flushed when its link opens must fit.
+  const minBufferedBytes = Math.max(UPSTREAM_MAX_QUEUE_BYTES, maxMessageBytes);
+  const maxBufferedBytes = parseEnv("MAX_BUFFERED_BYTES", (value) =>
+    parseOptionalIntegerInRange(value, minBufferedBytes, minBufferedBytes, Number.MAX_SAFE_INTEGER),
+  );
 
   const maxSessions = parseEnv("MAX_SESSIONS", parseOptionalPositiveInteger);
   const maxPendingSessions = parseEnv("MAX_PENDING_SESSIONS", parseOptionalPositiveInteger);
@@ -300,6 +312,7 @@ export function loadConfig(): Config {
     tenantBaseDomain,
     tenantHostHeader,
     maxMessageBytes,
+    maxBufferedBytes,
     maxSessions,
     maxPendingSessions,
     maxSessionsPerSource,
