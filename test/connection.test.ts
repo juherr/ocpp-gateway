@@ -833,6 +833,26 @@ describe("ChargerConnection lifecycle hooks", () => {
     expect(hooks).toEqual({ ended: 1, primaryOpened: 1 });
   });
 
+  it("warns when the primary goes away on its own", () => {
+    const warnings = captureWarnings();
+    const { hooks, primary } = startHookedSession();
+    primary.emit("open");
+    primary.emit("close", 1001, Buffer.from(""));
+
+    expect(messagesOf(warnings)).toEqual(["primary disconnected"]);
+    expect(hooks.ended).toBe(1);
+  });
+
+  it("does not warn when the primary closes after the session ended", () => {
+    const warnings = captureWarnings();
+    const { charger, primary } = startHookedSession();
+    primary.emit("open");
+    charger.emit("close", 1000, Buffer.from(""));
+    primary.emit("close", 1000, Buffer.from(""));
+
+    expect(messagesOf(warnings)).toEqual([]);
+  });
+
   it("ends the session when the primary URL is refused synchronously", async () => {
     const { hooks } = startHookedSession("ws://csms.example/ocpp#fragment");
     await Promise.resolve();
