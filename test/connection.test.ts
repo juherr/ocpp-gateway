@@ -1084,7 +1084,7 @@ describe("ChargerConnection buffered bytes", () => {
     expect(primary.readyState).toBe(WebSocket.CLOSED);
   });
 
-  it("closes the charger when the primary holds more than the bound", () => {
+  it("closes the charger and cuts the primary when the primary holds more than the bound", () => {
     const warnings = captureWarnings();
     const { charger, primary, secondary, send, session } = openSession({
       secondaries: [{ url: "ws://mirror.example/ocpp", appendChargeBoxId: true }],
@@ -1095,7 +1095,8 @@ describe("ChargerConnection buffered bytes", () => {
 
     expect(primary.sent).toEqual([]);
     expect(secondary.sent).toEqual([]);
-    expect(terminated).toEqual([charger]);
+    // A close frame would wait behind what the primary is not reading.
+    expect(terminated).toEqual([charger, primary]);
     expect(warnings).toEqual([
       expect.objectContaining({ msg: "send buffer full, closing the charger", link: "primary" }),
     ]);

@@ -217,6 +217,14 @@ export class ChargerConnection {
           bufferedAmount: primary.bufferedAmount,
           maxBufferedBytes: this.maxBufferedBytes,
         });
+        // Its close frame would wait behind what it is not reading: free the
+        // buffer now rather than after ws's close timeout. After teardown, so
+        // its close event finds the session already ended.
+        try {
+          primary.terminate();
+        } catch {
+          /* best-effort */
+        }
         return;
       }
       if (primary?.readyState === WebSocket.OPEN) {
