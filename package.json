@@ -40,8 +40,8 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "@sentry/node": "^11.14.0",
-    "mongodb": "^7.9.0",
+    "@sentry/node": "^11.15.0",
+    "mongodb": "^7.9.1",
     "ws": "^8.23.0"
   },
   "devDependencies": {
